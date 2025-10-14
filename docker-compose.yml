@@ -1,0 +1,18 @@
+services:
+  docling:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        ENABLE_CUDA: ${DOCLING_ENABLE_CUDA:-false}
+    environment:
+      - DOCLING_GPU_PREFERRED=${DOCLING_GPU_PREFERRED:-true}
+      - DOCLING_STORAGE_PATH=/data
+    ports:
+      - "5001:5001"
+    volumes:
+      - docling_data:/data
+#    restart: unless-stopped
+    restart: "no"
+volumes:
+  docling_data:

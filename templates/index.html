@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Docling Markdown Converter</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <h1>Docling Markdown Converter</h1>
+      <p>
+        Upload a PDF (or provide a public URL) and Docling will convert it to
+        Markdown. GPU acceleration is used automatically when available.
+      </p>
+
+      <section class="panel">
+        <form id="upload-form">
+          <label class="field">
+            <span>Upload PDF</span>
+            <input type="file" name="file" id="file" accept="application/pdf" />
+          </label>
+          <p><strong>Limit:</strong> Files larger than {{ max_upload_mb }}&nbsp;MB cannot be uploaded.</p>
+          <div class="divider">or</div>
+          <label class="field">
+            <span>Remote file URL</span>
+            <input type="url" name="source_url" id="source_url" placeholder="https://example.com/file.pdf" />
+          </label>
+          <button type="submit" class="primary">Convert</button>
+        </form>
+
+        <div id="status" class="status" hidden>
+          <p><strong>Status:</strong> <span id="status-text">pending</span></p>
+          <div id="progress" class="progress" hidden>
+            <span id="progress-text">Processing…</span>
+          </div>
+          <p id="detail" hidden><strong>Detail:</strong> <span id="detail-text"></span></p>
+          <div id="download" class="download" hidden>
+            <a id="download-link" href="#" target="_blank" download>
+              <span aria-hidden="true">⬇️</span>
+              <span id="download-label">Download Markdown</span>
+            </a>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const form = document.getElementById("upload-form");
+      const statusBox = document.getElementById("status");
+      const statusText = document.getElementById("status-text");
+      const detailBox = document.getElementById("detail");
+      const detailText = document.getElementById("detail-text");
+      const downloadBox = document.getElementById("download");
+      const downloadLink = document.getElementById("download-link");
+      const downloadLabel = document.getElementById("download-label");
+      const progressBox = document.getElementById("progress");
+      const progressText = document.getElementById("progress-text");
+
+      let pollTimer = null;
+      let pollStart = null;
+
+      async function pollStatus(taskId) {
+        try {
+          const response = await fetch(`/api/status/${taskId}`);
+          if (!response.ok) {
+            throw new Error("Failed to poll status");
+          }
+          const payload = await response.json();
+          statusText.textContent = payload.status;
+          if (payload.status === "processing") {
+            progressBox.hidden = false;
+            const elapsedSeconds = pollStart
+              ? Math.floor((Date.now() - pollStart) / 1000)
+              : 0;
+            progressText.textContent = elapsedSeconds
+              ? `Processing… (${elapsedSeconds}s elapsed)`
+              : "Processing…";
+          } else if (payload.status === "pending") {
+            progressBox.hidden = false;
+            progressText.textContent = "Queued";
+          } else {
+            progressBox.hidden = true;
+          }
+          if (payload.detail) {
+            detailText.textContent = payload.detail;
+            detailBox.hidden = false;
+          } else {
+            detailBox.hidden = true;
+          }
+          if (payload.download_url && payload.status === "completed") {
+            downloadLink.href = payload.download_url;
+            downloadLabel.textContent = payload.output_filename || payload.source_name || "Download Markdown";
+            downloadBox.hidden = false;
+            clearInterval(pollTimer);
+            pollStart = null;
+          } else if (payload.status === "failed") {
+            clearInterval(pollTimer);
+            pollStart = null;
+          }
+        } catch (error) {
+          detailText.textContent = error.message;
+          detailBox.hidden = false;
+          clearInterval(pollTimer);
+          pollStart = null;
+        }
+      }
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        detailBox.hidden = true;
+        downloadBox.hidden = true;
+        progressBox.hidden = false;
+        progressText.textContent = "Queued";
+
+        const formData = new FormData(form);
+        const response = await fetch("/api/convert", {
+          method: "POST",
+          body: formData,
+        });
+
+        if (!response.ok) {
+          const error = await response.json();
+          detailText.textContent = error.detail || "Conversion failed";
+          detailBox.hidden = false;
+          statusText.textContent = "failed";
+          statusBox.hidden = false;
+          return;
+        }
+
+        const payload = await response.json();
+        statusText.textContent = "pending";
+        statusBox.hidden = false;
+        pollStart = Date.now();
+
+        if (pollTimer) {
+          clearInterval(pollTimer);
+        }
+        pollTimer = setInterval(() => pollStatus(payload.task_id), 3000);
+        pollStatus(payload.task_id);
+      });
+    </script>
+  </body>
+</html>
