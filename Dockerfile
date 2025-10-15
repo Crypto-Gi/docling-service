@@ -1,7 +1,6 @@
 FROM python:3.11-slim
 
 ARG ENABLE_CUDA=false
-ARG LOAD_OPTIONAL_MODELS=false
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
@@ -37,23 +36,6 @@ RUN pip install --upgrade pip && \
 COPY app /app/app
 COPY templates /app/app/templates
 COPY static /app/app/static
-
-# Download core models (always included)
-RUN echo "Downloading core Docling models..." && \
-    python -c "from docling.utils import model_downloader; model_downloader.download_models()" && \
-    echo "Downloading Granite Docling 258M model..." && \
-    python -c "from huggingface_hub import snapshot_download; snapshot_download('ibm-granite/granite-docling-258M')"
-
-# Conditionally download optional VLM models
-RUN if [ "$LOAD_OPTIONAL_MODELS" = "true" ]; then \
-        echo "Downloading optional VLM models..." && \
-        python -c "from huggingface_hub import snapshot_download; \
-                   snapshot_download('HuggingFaceTB/SmolVLM-256M-Instruct'); \
-                   snapshot_download('ibm-granite/granite-vision-3.1-2b-preview'); \
-                   snapshot_download('ibm-granite/granite-vision-3.2-8b')"; \
-    else \
-        echo "Skipping optional models (set LOAD_OPTIONAL_MODELS=true to include)"; \
-    fi
 
 EXPOSE 5001
 
