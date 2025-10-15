@@ -5,14 +5,18 @@ services:
       dockerfile: Dockerfile
       args:
         ENABLE_CUDA: ${DOCLING_ENABLE_CUDA:-false}
+        LOAD_OPTIONAL_MODELS: ${DOCLING_LOAD_OPTIONAL_MODELS:-false}
     environment:
       - DOCLING_GPU_PREFERRED=${DOCLING_GPU_PREFERRED:-true}
       - DOCLING_STORAGE_PATH=/data
+      - DOCLING_MODEL_CACHE_PATH=/modelcache
     ports:
       - "5001:5001"
     volumes:
       - docling_data:/data
+      - model_cache:/modelcache
 #    restart: unless-stopped
     restart: "no"
 volumes:
   docling_data:
+  model_cache:

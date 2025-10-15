@@ -10,42 +10,183 @@
     <main class="container">
       <h1>Docling Markdown Converter</h1>
       <p>
-        Upload a PDF (or provide a public URL) and Docling will convert it to
-        Markdown. GPU acceleration is used automatically when available.
+        Convert PDFs and images to Markdown using AI-powered OCR and VLM models.
+        GPU acceleration is used automatically when available.
       </p>
 
       <section class="panel">
         <form id="upload-form">
+          <!-- Document Type Selector -->
+          <div class="field">
+            <span class="field-label">Document Type</span>
+            <div class="radio-group">
+              <label class="radio-option">
+                <input type="radio" name="document_type" value="pdf" checked />
+                <span>PDF</span>
+              </label>
+              <label class="radio-option">
+                <input type="radio" name="document_type" value="image" />
+                <span>Image</span>
+              </label>
+            </div>
+          </div>
+
+          <!-- File Upload -->
           <label class="field">
-            <span>Upload PDF</span>
+            <span id="file-label">Upload PDF</span>
             <input type="file" name="file" id="file" accept="application/pdf" />
           </label>
-          <p><strong>Limit:</strong> Files larger than {{ max_upload_mb }}&nbsp;MB cannot be uploaded.</p>
+          <p id="file-limit"><strong>Limit:</strong> Files larger than {{ max_upload_mb }}&nbsp;MB cannot be uploaded.</p>
+          
           <div class="divider">or</div>
+          
+          <!-- Remote URL -->
           <label class="field">
             <span>Remote file URL</span>
             <input type="url" name="source_url" id="source_url" placeholder="https://example.com/file.pdf" />
           </label>
-          <button type="submit" class="primary">Convert</button>
+
+          <!-- Options Panel -->
+          <details class="options-panel" open>
+            <summary>Conversion Options</summary>
+            <div class="options-content">
+              <!-- Model Selection -->
+              <label class="field">
+                <span>Model</span>
+                <select name="model" id="model">
+                  <option value="default" selected>Default (Docling OCR)</option>
+                  <option value="granite_docling">Granite Docling 258M</option>
+                  <option value="smolvlm">SmolVLM (Optional)</option>
+                  <option value="granite_vision_2b">Granite Vision 2B (Optional)</option>
+                  <option value="granite_vision_8b">Granite Vision 8B (Optional)</option>
+                </select>
+                <small class="hint" id="model-hint">Default OCR for PDFs, Granite Docling 258M for images</small>
+              </label>
+
+              <!-- Picture Description -->
+              <label class="field checkbox-field">
+                <input type="checkbox" name="do_picture_description" id="do_picture_description" checked />
+                <span>Generate picture descriptions</span>
+              </label>
+
+              <!-- Image Scale -->
+              <label class="field">
+                <span>Image Quality Scale: <span id="scale-value">2.0</span></span>
+                <input type="range" name="images_scale" id="images_scale" min="1.0" max="3.0" step="0.1" value="2.0" />
+              </label>
+
+              <!-- OCR Language -->
+              <label class="field">
+                <span>OCR Language</span>
+                <select name="ocr_language" id="ocr_language">
+                  <option value="en">English</option>
+                  <option value="es">Spanish</option>
+                  <option value="fr">French</option>
+                  <option value="de">German</option>
+                </select>
+              </label>
+
+              <!-- Custom Prompt (VLM Models) -->
+              <label class="field" id="custom-prompt-field" style="display: none;">
+                <span>Custom Prompt <small>(for VLM models)</small></span>
+                <textarea 
+                  name="custom_prompt" 
+                  id="custom_prompt" 
+                  rows="3" 
+                  placeholder="e.g., Extract all text including headers, dates, and contact information..."
+                ></textarea>
+                <small class="hint">Leave empty to use default prompt. Supported tags: &lt;chart&gt;, &lt;formula&gt;, &lt;code&gt;, &lt;otsl&gt;</small>
+              </label>
+
+              <!-- Advanced Options -->
+              <details class="advanced-options">
+                <summary>Advanced</summary>
+                <div class="advanced-content">
+                  <label class="field checkbox-field">
+                    <input type="checkbox" name="force_ocr" id="force_ocr" />
+                    <span>Force OCR</span>
+                  </label>
+                  <label class="field">
+                    <span>Table Mode</span>
+                    <select name="table_mode" id="table_mode">
+                      <option value="fast">Fast</option>
+                      <option value="accurate">Accurate</option>
+                    </select>
+                  </label>
+                </div>
+              </details>
+            </div>
+          </details>
+
+          <button type="submit" class="primary">Convert to Markdown</button>
         </form>
 
+        <!-- Status & Results Section -->
         <div id="status" class="status" hidden>
           <p><strong>Status:</strong> <span id="status-text">pending</span></p>
           <div id="progress" class="progress" hidden>
             <span id="progress-text">Processing…</span>
           </div>
           <p id="detail" hidden><strong>Detail:</strong> <span id="detail-text"></span></p>
+
+          <!-- Metadata Card -->
+          <div id="metadata" class="metadata-card" hidden>
+            <h3>Conversion Details</h3>
+            <div class="metadata-grid">
+              <div class="metadata-item">
+                <span class="metadata-label">Model Used:</span>
+                <span id="metadata-model">-</span>
+              </div>
+              <div class="metadata-item">
+                <span class="metadata-label">Processing Time:</span>
+                <span id="metadata-time">-</span>
+              </div>
+              <div class="metadata-item">
+                <span class="metadata-label">Pages Processed:</span>
+                <span id="metadata-pages">-</span>
+              </div>
+              <div class="metadata-item">
+                <span class="metadata-label">Images Extracted:</span>
+                <span id="metadata-images">-</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Preview Tabs -->
+          <div id="preview" class="preview-section" hidden>
+            <div class="tabs">
+              <button class="tab-button active" data-tab="markdown">Markdown</button>
+              <button class="tab-button" data-tab="html">HTML Preview</button>
+              <button class="tab-button" data-tab="json">JSON</button>
+            </div>
+            <div class="tab-content">
+              <div id="tab-markdown" class="tab-pane active">
+                <pre id="markdown-content"></pre>
+              </div>
+              <div id="tab-html" class="tab-pane">
+                <div id="html-content" class="html-preview"></div>
+              </div>
+              <div id="tab-json" class="tab-pane">
+                <pre id="json-content"></pre>
+              </div>
+            </div>
+          </div>
+
+          <!-- Action Buttons -->
           <div id="download" class="download" hidden>
-            <a id="download-link" href="#" target="_blank" download>
+            <a id="download-link" href="#" target="_blank" download class="btn-download">
               <span aria-hidden="true">⬇️</span>
               <span id="download-label">Download Markdown</span>
             </a>
+            <button id="copy-markdown" class="btn-copy">📋 Copy Markdown</button>
+            <button id="download-json" class="btn-secondary">Download JSON</button>
           </div>
         </div>
       </section>
     </main>
 
     <script>
+      // DOM Elements
       const form = document.getElementById("upload-form");
       const statusBox = document.getElementById("status");
       const statusText = document.getElementById("status-text");
@@ -56,9 +197,120 @@
       const downloadLabel = document.getElementById("download-label");
       const progressBox = document.getElementById("progress");
       const progressText = document.getElementById("progress-text");
+      const metadataBox = document.getElementById("metadata");
+      const previewBox = document.getElementById("preview");
+      
+      // Form Controls
+      const documentTypeRadios = document.querySelectorAll('input[name="document_type"]');
+      const fileInput = document.getElementById("file");
+      const fileLabel = document.getElementById("file-label");
+      const sourceUrlInput = document.getElementById("source_url");
+      const imagesScaleInput = document.getElementById("images_scale");
+      const scaleValueSpan = document.getElementById("scale-value");
+      const modelSelect = document.getElementById("model");
+      const modelHint = document.getElementById("model-hint");
+      
+      // Tab Controls
+      const tabButtons = document.querySelectorAll(".tab-button");
+      const tabPanes = document.querySelectorAll(".tab-pane");
+      
+      // Action Buttons
+      const copyMarkdownBtn = document.getElementById("copy-markdown");
+      const downloadJsonBtn = document.getElementById("download-json");
+      const jsonContent = document.getElementById("json-content");
+      const htmlContent = document.getElementById("html-content");
+      const markdownContent = document.getElementById("markdown-content");
 
       let pollTimer = null;
       let pollStart = null;
+      let currentTaskId = null;
+
+      // Show/hide custom prompt field based on model selection
+      const customPromptField = document.getElementById("custom-prompt-field");
+      const customPromptTextarea = document.getElementById("custom_prompt");
+      
+      function updateCustomPromptVisibility() {
+        const model = modelSelect.value;
+        const isVLM = ["granite_docling", "smolvlm", "granite_vision_2b", "granite_vision_8b"].includes(model);
+        customPromptField.style.display = isVLM ? "block" : "none";
+        
+        // Set default prompts based on model
+        if (model === "granite_docling" && !customPromptTextarea.value) {
+          customPromptTextarea.placeholder = "Convert this page to docling. Extract all text, tables, formulas, and code accurately.";
+        } else if (model === "smolvlm" && !customPromptTextarea.value) {
+          customPromptTextarea.placeholder = "Describe this image in detail, extracting all visible text and structure.";
+        }
+      }
+      
+      modelSelect.addEventListener("change", updateCustomPromptVisibility);
+      
+      // Document Type Toggle Handler
+      documentTypeRadios.forEach(radio => {
+        radio.addEventListener("change", (e) => {
+          const docType = e.target.value;
+          if (docType === "pdf") {
+            fileLabel.textContent = "Upload PDF";
+            fileInput.accept = "application/pdf";
+            sourceUrlInput.placeholder = "https://example.com/file.pdf";
+            // Auto-select default OCR for PDFs
+            modelSelect.value = "default";
+            modelHint.textContent = "Default OCR recommended for PDFs";
+          } else if (docType === "image") {
+            fileLabel.textContent = "Upload Image";
+            fileInput.accept = "image/png,image/jpeg,image/jpg,image/webp";
+            sourceUrlInput.placeholder = "https://example.com/image.jpg";
+            // Auto-select Granite Docling for images
+            modelSelect.value = "granite_docling";
+            modelHint.textContent = "Granite Docling 258M recommended for images (258MB model)";
+          }
+          updateCustomPromptVisibility();
+        });
+      });
+      
+      // Initialize prompt visibility
+      updateCustomPromptVisibility();
+
+      // Image Scale Slider Handler
+      imagesScaleInput.addEventListener("input", (e) => {
+        scaleValueSpan.textContent = parseFloat(e.target.value).toFixed(1);
+      });
+
+      // Tab Switching Handler
+      tabButtons.forEach(button => {
+        button.addEventListener("click", () => {
+          const targetTab = button.dataset.tab;
+          
+          // Update button states
+          tabButtons.forEach(btn => btn.classList.remove("active"));
+          button.classList.add("active");
+          
+          // Update pane visibility
+          tabPanes.forEach(pane => pane.classList.remove("active"));
+          document.getElementById(`tab-${targetTab}`).classList.add("active");
+        });
+      });
+
+      // Copy Markdown Handler
+      copyMarkdownBtn.addEventListener("click", async () => {
+        try {
+          await navigator.clipboard.writeText(markdownContent.textContent);
+          copyMarkdownBtn.textContent = "✓ Copied!";
+          setTimeout(() => {
+            copyMarkdownBtn.textContent = "📋 Copy Markdown";
+          }, 2000);
+        } catch (err) {
+          console.error("Failed to copy:", err);
+        }
+      });
+
+      // Download JSON handler
+      downloadJsonBtn.addEventListener("click", () => {
+        const url = downloadJsonBtn.dataset.downloadUrl;
+        if (!url) {
+          return;
+        }
+        window.open(url, "_blank");
+      });
 
       async function pollStatus(taskId) {
         try {
@@ -88,10 +340,26 @@
           } else {
             detailBox.hidden = true;
           }
+          // Display metadata if available
+          if (payload.metadata) {
+            document.getElementById("metadata-model").textContent = payload.metadata.model_used || "-";
+            document.getElementById("metadata-time").textContent = 
+              payload.metadata.processing_time_seconds 
+                ? `${payload.metadata.processing_time_seconds.toFixed(2)}s` 
+                : "-";
+            document.getElementById("metadata-pages").textContent = payload.metadata.pages_processed || "0";
+            document.getElementById("metadata-images").textContent = payload.metadata.images_extracted || "0";
+            metadataBox.hidden = false;
+          }
+
           if (payload.download_url && payload.status === "completed") {
             downloadLink.href = payload.download_url;
             downloadLabel.textContent = payload.output_filename || payload.source_name || "Download Markdown";
             downloadBox.hidden = false;
+            
+            // Fetch and display preview content
+            fetchPreviewContent(taskId);
+            
             clearInterval(pollTimer);
             pollStart = null;
           } else if (payload.status === "failed") {
@@ -106,10 +374,41 @@
         }
       }
 
+      // Fetch preview content for completed tasks
+      async function fetchPreviewContent(taskId) {
+        try {
+          const previewResponse = await fetch(`/api/preview/${taskId}`);
+          if (!previewResponse.ok) {
+            throw new Error("Failed to load preview content");
+          }
+          const previewData = await previewResponse.json();
+
+          markdownContent.textContent = previewData.markdown || "";
+          htmlContent.innerHTML = previewData.html || "";
+          jsonContent.textContent = previewData.json_data
+            ? JSON.stringify(previewData.json_data, null, 2)
+            : "{}";
+
+          downloadJsonBtn.dataset.downloadUrl = `/api/result/${taskId}/json`;
+          downloadJsonBtn.disabled = false;
+          previewBox.hidden = false;
+        } catch (err) {
+          console.error("Failed to fetch preview:", err);
+          downloadJsonBtn.disabled = true;
+          previewBox.hidden = true;
+        }
+      }
+
       form.addEventListener("submit", async (event) => {
         event.preventDefault();
         detailBox.hidden = true;
         downloadBox.hidden = true;
+        previewBox.hidden = true;
+        markdownContent.textContent = "";
+        htmlContent.innerHTML = "";
+        jsonContent.textContent = "";
+        downloadJsonBtn.dataset.downloadUrl = "";
+        downloadJsonBtn.disabled = true;
         progressBox.hidden = false;
         progressText.textContent = "Queued";
 
