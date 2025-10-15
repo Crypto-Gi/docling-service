@@ -1,0 +1,41 @@
+# Python / general
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.swp
+*.swo
+*.log
+*.sqlite3
+*.db
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# OS files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Coverage / testing
+.coverage
+htmlcov/
+pytest_cache/
+
+# Project data
+storage/
+.env
+.env.*
+!.env.example
+
+# Docker
+*.pid
+*.pid.lock

@@ -53,6 +53,46 @@
       </section>
     </main>
 
+    <!-- Upload Progress Overlay - Compact Bottom Right -->
+    <div id="upload-overlay" class="upload-overlay" hidden>
+      <div class="upload-card">
+        <div class="upload-header">
+          <div class="upload-icon-small">📄</div>
+          <div class="upload-title-section">
+            <h4 id="upload-title">Processing Document</h4>
+            <p id="upload-message" class="upload-subtitle">Preparing upload...</p>
+          </div>
+        </div>
+        
+        <div class="upload-progress-bar-slim">
+          <div id="upload-progress-fill" class="upload-progress-fill"></div>
+        </div>
+        
+        <div id="upload-stages" class="upload-stages-compact">
+          <div class="stage-compact" id="stage-upload">
+            <span class="stage-dot">●</span>
+            <span class="stage-label">Upload</span>
+          </div>
+          <div class="stage-compact" id="stage-processing">
+            <span class="stage-dot">●</span>
+            <span class="stage-label">Process</span>
+          </div>
+          <div class="stage-compact" id="stage-images">
+            <span class="stage-dot">●</span>
+            <span class="stage-label">Images</span>
+          </div>
+          <div class="stage-compact" id="stage-cloud">
+            <span class="stage-dot">●</span>
+            <span class="stage-label">Cloud</span>
+          </div>
+          <div class="stage-compact" id="stage-complete">
+            <span class="stage-dot">●</span>
+            <span class="stage-label">Done</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <script>
       const form = document.getElementById("upload-form");
       const statusBox = document.getElementById("status");
@@ -67,6 +107,56 @@
 
       let pollTimer = null;
       let pollStart = null;
+
+      // Upload overlay elements
+      const uploadOverlay = document.getElementById("upload-overlay");
+      const uploadTitle = document.getElementById("upload-title");
+      const uploadMessage = document.getElementById("upload-message");
+      const uploadProgressFill = document.getElementById("upload-progress-fill");
+      
+      // Stage elements
+      const stages = {
+        upload: document.getElementById("stage-upload"),
+        processing: document.getElementById("stage-processing"),
+        images: document.getElementById("stage-images"),
+        cloud: document.getElementById("stage-cloud"),
+        complete: document.getElementById("stage-complete")
+      };
+
+      // Upload overlay functions
+      function showUploadOverlay() {
+        uploadOverlay.hidden = false;
+        updateUploadProgress(0, "Preparing upload...");
+      }
+
+      function hideUploadOverlay() {
+        uploadOverlay.hidden = true;
+        resetStages();
+      }
+
+      function updateUploadProgress(percent, message) {
+        uploadProgressFill.style.width = `${percent}%`;
+        uploadMessage.textContent = message;
+      }
+
+      function updateStage(stageName, status) {
+        const stage = stages[stageName];
+        if (!stage) return;
+        
+        if (status === 'active') {
+          stage.classList.add('active');
+          stage.classList.remove('complete');
+        } else if (status === 'complete') {
+          stage.classList.remove('active');
+          stage.classList.add('complete');
+        } else {
+          stage.classList.remove('active', 'complete');
+        }
+      }
+
+      function resetStages() {
+        Object.keys(stages).forEach(key => updateStage(key, 'pending'));
+      }
 
       // Fetch and display cloud storage status
       async function loadCloudStorageStatus() {
@@ -101,6 +191,8 @@
           }
           const payload = await response.json();
           statusText.textContent = payload.status;
+          
+          // Update overlay based on status
           if (payload.status === "processing") {
             progressBox.hidden = false;
             const elapsedSeconds = pollStart
@@ -109,31 +201,69 @@
             progressText.textContent = elapsedSeconds
               ? `Processing… (${elapsedSeconds}s elapsed)`
               : "Processing…";
+            
+            // Update overlay stages
+            updateStage('upload', 'complete');
+            updateStage('processing', 'active');
+            updateUploadProgress(40, "Processing document...");
+            
+            // Simulate stages based on elapsed time
+            if (elapsedSeconds > 2) {
+              updateStage('processing', 'complete');
+              updateStage('images', 'active');
+              updateUploadProgress(60, "Extracting images...");
+            }
+            if (elapsedSeconds > 4) {
+              updateStage('images', 'complete');
+              updateStage('cloud', 'active');
+              updateUploadProgress(80, "Uploading to cloud storage...");
+            }
+            if (elapsedSeconds > 6) {
+              updateStage('cloud', 'complete');
+              updateStage('complete', 'active');
+              updateUploadProgress(90, "Generating markdown...");
+            }
           } else if (payload.status === "pending") {
             progressBox.hidden = false;
             progressText.textContent = "Queued";
+            updateStage('upload', 'active');
+            updateUploadProgress(20, "Queued for processing...");
           } else {
             progressBox.hidden = true;
           }
+          
           if (payload.detail) {
             detailText.textContent = payload.detail;
             detailBox.hidden = false;
           } else {
             detailBox.hidden = true;
           }
+          
           if (payload.download_url && payload.status === "completed") {
-            downloadLink.href = payload.download_url;
-            downloadLabel.textContent = payload.output_filename || payload.source_name || "Download Markdown";
-            downloadBox.hidden = false;
+            // Complete all stages
+            updateStage('complete', 'complete');
+            updateUploadProgress(100, "✅ Conversion complete!");
+            
+            setTimeout(() => {
+              hideUploadOverlay();
+              downloadLink.href = payload.download_url;
+              downloadLabel.textContent = payload.output_filename || payload.source_name || "Download Markdown";
+              downloadBox.hidden = false;
+            }, 1500);
+            
             clearInterval(pollTimer);
             pollStart = null;
           } else if (payload.status === "failed") {
+            updateUploadProgress(100, "❌ Conversion failed");
+            setTimeout(() => hideUploadOverlay(), 2000);
             clearInterval(pollTimer);
             pollStart = null;
           }
         } catch (error) {
           detailText.textContent = error.message;
           detailBox.hidden = false;
+          updateUploadProgress(100, "❌ Error occurred");
+          setTimeout(() => hideUploadOverlay(), 2000);
           clearInterval(pollTimer);
           pollStart = null;
         }
@@ -145,6 +275,11 @@
         downloadBox.hidden = true;
         progressBox.hidden = false;
         progressText.textContent = "Queued";
+
+        // Show upload overlay
+        showUploadOverlay();
+        updateStage('upload', 'active');
+        updateUploadProgress(10, "Uploading document...");
 
         const formData = new FormData(form);
         const response = await fetch("/api/convert", {
@@ -158,6 +293,8 @@
           detailBox.hidden = false;
           statusText.textContent = "failed";
           statusBox.hidden = false;
+          updateUploadProgress(100, "❌ Upload failed");
+          setTimeout(() => hideUploadOverlay(), 2000);
           return;
         }
 
@@ -165,6 +302,10 @@
         statusText.textContent = "pending";
         statusBox.hidden = false;
         pollStart = Date.now();
+
+        // Update overlay after successful upload
+        updateStage('upload', 'complete');
+        updateUploadProgress(20, "Upload complete, processing...");
 
         if (pollTimer) {
           clearInterval(pollTimer);
