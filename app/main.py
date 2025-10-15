@@ -23,6 +23,7 @@ from docling_core.types.doc.base import ImageRefMode
 from docling_core.types.doc.document import ImageRef, PictureItem, TableItem
 
 from .config import settings
+from .storage import create_storage_backend
 
 
 @dataclass
@@ -126,6 +127,7 @@ class TaskManager:
         self._cleanup_lock = asyncio.Lock()
         self._soft_limit = soft_limit
         self._hard_limit = hard_limit
+        self.storage_backend = create_storage_backend(settings)
 
     async def enqueue(self, task_id: str, source: ConversionSource) -> None:
         now = datetime.utcnow()
@@ -179,7 +181,7 @@ class TaskManager:
         if source.file_path and source.file_path.exists():
             await asyncio.to_thread(source.file_path.unlink)
 
-    async def _update_image_uris(self, result: ConversionResult, image_map: dict[str, Path]) -> None:
+    async def _update_image_uris(self, result: ConversionResult, image_map: dict[str, str]) -> None:
         """Update image URIs in the document to reference saved file paths."""
         for element, _level in result.document.iterate_items():
             if isinstance(element, PictureItem):
@@ -192,25 +194,65 @@ class TaskManager:
                         uri=rel_path,
                     )
 
-    async def _save_images(self, result: ConversionResult, task_id: str, images_dir: Path) -> dict[str, Path]:
-        """Save picture and table images to disk as PNG files."""
+    async def _save_images(self, result: ConversionResult, task_id: str, images_dir: Path) -> dict[str, str]:
+        """Save picture and table images to disk and upload to cloud storage (sync mode).
+        
+        Returns:
+            Dictionary mapping element.self_ref to final URL/path (cloud URL or local path)
+        """
+        import logging
+        _log = logging.getLogger(__name__)
+        
         picture_counter = 0
         table_counter = 0
-        image_map: dict[str, Path] = {}
+        image_map: dict[str, str] = {}
+        
         for element, _level in result.document.iterate_items():
             if isinstance(element, PictureItem):
                 picture_counter += 1
-                image_filename = images_dir / f"picture-{picture_counter}.png"
+                filename = f"picture-{picture_counter}.png"
+                local_path = images_dir / filename
+                remote_key = f"images/{task_id}/{filename}"
+                
+                # Save locally first
                 img = element.get_image(result.document)
                 if img:
-                    await asyncio.to_thread(img.save, image_filename, "PNG")
-                    image_map[element.self_ref] = Path("images") / task_id / f"picture-{picture_counter}.png"
+                    await asyncio.to_thread(img.save, local_path, "PNG")
+                    
+                    # Upload to cloud storage if enabled (synchronous mode)
+                    try:
+                        url = await self.storage_backend.upload(local_path, remote_key)
+                        image_map[element.self_ref] = url
+                        
+                        # Optionally delete local copy after successful upload
+                        if not settings.cloud_keep_local_copy and self.storage_backend.is_enabled():
+                            if self.storage_backend.__class__.__name__ != "LocalStorage":
+                                local_path.unlink()
+                    
+                    except Exception as e:
+                        # Fallback to local path on upload failure
+                        _log.error(f"Cloud upload failed for {filename}, using local path: {e}")
+                        image_map[element.self_ref] = str(Path("images") / task_id / filename)
+            
             elif isinstance(element, TableItem):
                 table_counter += 1
-                image_filename = images_dir / f"table-{table_counter}.png"
+                filename = f"table-{table_counter}.png"
+                local_path = images_dir / filename
+                remote_key = f"images/{task_id}/{filename}"
+                
                 img = element.get_image(result.document)
                 if img:
-                    await asyncio.to_thread(img.save, image_filename, "PNG")
+                    await asyncio.to_thread(img.save, local_path, "PNG")
+                    
+                    # Upload table images too
+                    try:
+                        await self.storage_backend.upload(local_path, remote_key)
+                        if not settings.cloud_keep_local_copy and self.storage_backend.is_enabled():
+                            if self.storage_backend.__class__.__name__ != "LocalStorage":
+                                local_path.unlink()
+                    except Exception as e:
+                        _log.error(f"Cloud upload failed for table {filename}: {e}")
+        
         return image_map
 
     async def _update(self, task_id: str, **updates) -> None:
@@ -394,3 +436,26 @@ async def download_markdown(task_id: str) -> FileResponse:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Result not available")
     filename = state.output_filename or state.source_name or f"{task_id}.md"
     return FileResponse(state.output_path, media_type="text/markdown", filename=filename)
+
+
+class CloudStorageStatus(BaseModel):
+    """Cloud storage configuration status."""
+    enabled: bool
+    provider: str
+    upload_mode: str
+    backend_ready: bool
+    backend_type: str
+    keep_local_copy: bool
+
+
+@app.get("/api/cloud-storage/status", response_model=CloudStorageStatus)
+async def get_cloud_storage_status() -> CloudStorageStatus:
+    """Get current cloud storage configuration and status."""
+    return CloudStorageStatus(
+        enabled=settings.cloud_storage_enabled,
+        provider=settings.cloud_storage_provider,
+        upload_mode=settings.cloud_upload_mode,
+        backend_ready=manager.storage_backend.is_enabled(),
+        backend_type=manager.storage_backend.__class__.__name__,
+        keep_local_copy=settings.cloud_keep_local_copy,
+    )

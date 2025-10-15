@@ -14,6 +14,14 @@
         Markdown. GPU acceleration is used automatically when available.
       </p>
 
+      <div id="cloud-storage-status" class="cloud-status" hidden>
+        <p>
+          <strong>Cloud Storage:</strong> 
+          <span id="cloud-provider"></span>
+          <span id="cloud-badge" class="badge"></span>
+        </p>
+      </div>
+
       <section class="panel">
         <form id="upload-form">
           <label class="field">
@@ -59,6 +67,31 @@
 
       let pollTimer = null;
       let pollStart = null;
+
+      // Fetch and display cloud storage status
+      async function loadCloudStorageStatus() {
+        try {
+          const response = await fetch('/api/cloud-storage/status');
+          if (response.ok) {
+            const status = await response.json();
+            if (status.enabled && status.backend_ready) {
+              const statusBox = document.getElementById('cloud-storage-status');
+              const providerSpan = document.getElementById('cloud-provider');
+              const badgeSpan = document.getElementById('cloud-badge');
+              
+              providerSpan.textContent = `${status.provider} (${status.upload_mode})`;
+              badgeSpan.textContent = '✓ Active';
+              badgeSpan.className = 'badge badge-success';
+              statusBox.hidden = false;
+            }
+          }
+        } catch (error) {
+          console.log('Cloud storage status unavailable:', error);
+        }
+      }
+
+      // Load cloud storage status on page load
+      loadCloudStorageStatus();
 
       async function pollStatus(taskId) {
         try {

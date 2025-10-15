@@ -6,3 +6,5 @@ aiofiles==24.1.0
 docling==2.55.1
 docling-serve==1.6.0
 easyocr==1.7.1
+boto3>=1.34.0
+botocore>=1.34.0
