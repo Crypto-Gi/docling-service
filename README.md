@@ -70,6 +70,10 @@ docker compose down
 | `/api/result/{task_id}` | GET | Download resulting Markdown |
 | `/api/cloud-storage/status` | GET | Inspect active storage backend configuration |
 
+**📖 For detailed API usage, code examples, and integration patterns, see [docs/API_USAGE.md](docs/API_USAGE.md)**
+
+Interactive API documentation is available at `http://localhost:5001/docs`
+
 ## Cloud Storage Workflow
 
 1. Extracted images are saved locally under `images/{task_id}/`.
