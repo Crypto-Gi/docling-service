@@ -133,6 +133,42 @@ curl -O -J http://localhost:5001/api/result/a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6
 
 ---
 
+### 3b. Get Markdown as JSON (Recommended for Agentic AI)
+
+**Endpoint**: `GET /api/result/{task_id}/json`
+
+**Description**: Get markdown content directly as JSON without downloading a file. **Perfect for agentic AI systems** that need to process the content programmatically.
+
+```bash
+curl http://localhost:5001/api/result/a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6/json
+```
+
+**Response**:
+```json
+{
+  "task_id": "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6",
+  "markdown_content": "# Document Title\n\n![Image](https://cdn.example.com/images/task_id/picture-1.png)\n\nDocument content here...",
+  "source_name": "document.pdf",
+  "output_filename": "10-15-2025-203000.md",
+  "markdown_url": "https://cdn.example.com/markdown/task_id/10-15-2025-203000.md",
+  "created_at": "2025-10-15T20:30:00.000Z",
+  "completed_at": "2025-10-15T20:30:15.000Z"
+}
+```
+
+**Benefits**:
+- ✅ No file handling required
+- ✅ Get content in single request
+- ✅ Includes cloud URL if uploaded
+- ✅ Metadata included (timestamps, filenames)
+- ✅ Perfect for LLM/agent processing
+
+**Status Codes**:
+- `200 OK` - JSON response with markdown
+- `404 Not Found` - Task not found or result not ready
+
+---
+
 ### 4. Check Cloud Storage Status
 
 **Endpoint**: `GET /api/cloud-storage/status`
@@ -211,6 +247,72 @@ if __name__ == "__main__":
     markdown = convert_pdf("document.pdf")
     Path("output.md").write_text(markdown)
     print("Conversion complete!")
+```
+
+### Python Example with JSON Endpoint (Recommended for Agents)
+
+```python
+import requests
+import time
+
+BASE_URL = "http://localhost:5001"
+
+def convert_pdf_json(pdf_path: str) -> dict:
+    """Convert PDF and return JSON response with markdown and metadata."""
+    
+    # Step 1: Submit conversion
+    with open(pdf_path, 'rb') as f:
+        response = requests.post(
+            f"{BASE_URL}/api/convert",
+            files={"file": f}
+        )
+    response.raise_for_status()
+    task_id = response.json()["task_id"]
+    print(f"Task submitted: {task_id}")
+    
+    # Step 2: Poll status
+    while True:
+        response = requests.get(f"{BASE_URL}/api/status/{task_id}")
+        response.raise_for_status()
+        status_data = response.json()
+        
+        status = status_data["status"]
+        print(f"Status: {status}")
+        
+        if status == "completed":
+            # Check if markdown is available in cloud
+            if status_data.get("markdown_url"):
+                print(f"Markdown URL: {status_data['markdown_url']}")
+            break
+        elif status == "failed":
+            raise Exception(f"Conversion failed: {status_data.get('detail')}")
+        
+        time.sleep(3)
+    
+    # Step 3: Get JSON result (no file download needed!)
+    response = requests.get(f"{BASE_URL}/api/result/{task_id}/json")
+    response.raise_for_status()
+    result = response.json()
+    
+    print(f"Markdown content: {len(result['markdown_content'])} chars")
+    print(f"Cloud URL: {result.get('markdown_url', 'N/A')}")
+    
+    return result
+
+# Usage for agentic AI
+if __name__ == "__main__":
+    result = convert_pdf_json("document.pdf")
+    
+    # Access markdown directly
+    markdown = result["markdown_content"]
+    
+    # Access cloud URL if available
+    cloud_url = result.get("markdown_url")
+    
+    # Access metadata
+    print(f"Source: {result['source_name']}")
+    print(f"Created: {result['created_at']}")
+    print(f"Completed: {result['completed_at']}")
 ```
 
 ### Python Example (Async with aiohttp)

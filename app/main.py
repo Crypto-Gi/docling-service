@@ -45,6 +45,7 @@ class TaskState:
     source_name: Optional[str] = None
     source_kind: Literal["upload", "url"] = "upload"
     output_filename: Optional[str] = None
+    markdown_url: Optional[str] = None
 
 
 class TaskStatusResponse(BaseModel):
@@ -57,6 +58,7 @@ class TaskStatusResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     output_filename: Optional[str] = None
+    markdown_url: Optional[str] = None
 
 
 class ConverterManager:
@@ -172,11 +174,25 @@ class TaskManager:
         output_path = self.output_dir / output_filename
         await asyncio.to_thread(output_path.write_text, markdown, encoding="utf-8")
         await self.enforce_output_limit(exclude={output_path})
+        
+        # Upload markdown to cloud storage if enabled
+        markdown_url = None
+        if self.storage_backend.is_enabled():
+            try:
+                remote_key = f"markdown/{task_id}/{output_filename}"
+                markdown_url = await self.storage_backend.upload(output_path, remote_key)
+                import logging
+                logging.getLogger(__name__).info(f"Uploaded markdown to cloud: {markdown_url}")
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(f"Failed to upload markdown to cloud: {e}")
+        
         await self._update(
             task_id,
             status="completed",
             output_path=output_path,
             output_filename=output_filename,
+            markdown_url=markdown_url,
         )
         if source.file_path and source.file_path.exists():
             await asyncio.to_thread(source.file_path.unlink)
@@ -279,6 +295,7 @@ class TaskManager:
                 source_name=state.source_name,
                 source_kind=state.source_kind,
                 output_filename=state.output_filename,
+                markdown_url=state.markdown_url,
             )
 
     async def enforce_upload_limit(self, *, exclude: set[Path] | None = None) -> None:
@@ -426,6 +443,7 @@ async def get_status(request: Request, task_id: str) -> TaskStatusResponse:
         created_at=state.created_at,
         updated_at=state.updated_at,
         output_filename=state.output_filename,
+        markdown_url=state.markdown_url,
     )
 
 
@@ -436,6 +454,38 @@ async def download_markdown(task_id: str) -> FileResponse:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Result not available")
     filename = state.output_filename or state.source_name or f"{task_id}.md"
     return FileResponse(state.output_path, media_type="text/markdown", filename=filename)
+
+
+class MarkdownResultResponse(BaseModel):
+    """JSON response containing markdown content and metadata."""
+    task_id: str
+    markdown_content: str
+    source_name: Optional[str]
+    output_filename: str
+    markdown_url: Optional[str]
+    created_at: datetime
+    completed_at: datetime
+
+
+@app.get("/api/result/{task_id}/json", response_model=MarkdownResultResponse)
+async def get_markdown_json(task_id: str) -> MarkdownResultResponse:
+    """Get markdown content as JSON (ideal for agentic AI systems)."""
+    state = await manager.get(task_id)
+    if state is None or state.output_path is None or state.status != "completed":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Result not available")
+    
+    # Read markdown content
+    markdown_content = await asyncio.to_thread(state.output_path.read_text, encoding="utf-8")
+    
+    return MarkdownResultResponse(
+        task_id=task_id,
+        markdown_content=markdown_content,
+        source_name=state.source_name,
+        output_filename=state.output_filename or f"{task_id}.md",
+        markdown_url=state.markdown_url,
+        created_at=state.created_at,
+        completed_at=state.updated_at,
+    )
 
 
 class CloudStorageStatus(BaseModel):

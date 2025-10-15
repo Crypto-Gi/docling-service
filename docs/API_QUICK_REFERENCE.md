@@ -38,9 +38,12 @@ markdown = requests.get(f"http://localhost:5001/api/result/{task_id}").text
 |----------|--------|---------|
 | `/api/convert` | POST | Submit PDF |
 | `/api/status/{task_id}` | GET | Check progress |
-| `/api/result/{task_id}` | GET | Download markdown |
+| `/api/result/{task_id}` | GET | Download markdown file |
+| `/api/result/{task_id}/json` | GET | Get markdown as JSON ⭐ |
 | `/api/cloud-storage/status` | GET | Check cloud config |
 | `/docs` | GET | Interactive API docs |
+
+⭐ **Recommended for agentic AI** - Returns markdown content directly in JSON without file download
 
 ## Cloud Storage
 
