@@ -33,7 +33,6 @@ pytest_cache/
 # Project data
 storage/
 .env
-.env.*
 !.env.example
 
 # Docker

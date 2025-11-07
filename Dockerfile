@@ -37,6 +37,6 @@ COPY app /app/app
 COPY templates /app/app/templates
 COPY static /app/app/static
 
-EXPOSE 5001
+EXPOSE 5010
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "5001"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "5010"]

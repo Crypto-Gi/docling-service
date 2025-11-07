@@ -1,9 +1,10 @@
 # Docling Service
 
-Docling Service converts PDFs into richly formatted Markdown with image extraction, cloud storage uploads, and a modern web UI. The project ships with production-ready synchronous uploads to Cloudflare R2, REST APIs for automation, and an in-browser experience designed for agents and humans alike.
+Docling Service converts documents (PDF, Word, Excel, PowerPoint) into richly formatted Markdown with image extraction, cloud storage uploads, and a modern web UI. The project ships with production-ready synchronous uploads to Cloudflare R2, REST APIs for automation, and an in-browser experience designed for agents and humans alike.
 
 ## Features
 
+- 📄 **Multi-format support**: PDF, Word (.docx), Excel (.xlsx), PowerPoint (.pptx)
 - Cloud-aware pipeline with pluggable storage backends (`local`, `cloudflare_r2`).
 - Synchronous upload mode that guarantees working URLs on completion.
 - Background-safe fallback to local assets when cloud uploads fail.
@@ -52,7 +53,20 @@ docker compose build
 docker compose up -d
 ```
 
-The UI is available at `http://localhost:5001`. The FastAPI docs live at `http://localhost:5001/docs`.
+The UI is available at `http://localhost:5010`. The FastAPI docs live at `http://localhost:5010/docs`.
+
+### GPU/CPU Mode Control
+
+**Quick mode switching:**
+```bash
+# Use CPU mode (stable, recommended)
+./set-cpu-mode.sh && docker compose restart
+
+# Use GPU mode (faster, needs more memory)
+./set-gpu-mode.sh && docker compose restart
+```
+
+See [docs/GPU_CPU_CONTROL.md](docs/GPU_CPU_CONTROL.md) for details.
 
 ### Stopping the Stack
 

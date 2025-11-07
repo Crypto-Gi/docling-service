@@ -26,9 +26,9 @@ For production, replace with your deployed domain.
 
 **Endpoint**: `POST /api/convert`
 
-**Description**: Submit a PDF file or URL for conversion. Returns immediately with a task ID.
+**Description**: Submit a document file (PDF, DOCX, XLSX, PPTX) or URL for conversion. Returns immediately with a task ID.
 
-#### Option A: Upload PDF File
+#### Option A: Upload Document File
 
 ```bash
 curl -X POST http://localhost:5001/api/convert \
@@ -42,7 +42,33 @@ curl -X POST http://localhost:5001/api/convert \
 }
 ```
 
-#### Option B: Provide PDF URL
+#### Option B: Upload Word Document
+
+```bash
+curl -X POST http://localhost:5001/api/convert \
+  -F "file=@report.docx"
+```
+
+**Response**:
+```json
+{
+  "task_id": "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6"
+}
+```
+
+#### Option C: Upload Excel or PowerPoint
+
+```bash
+# Excel spreadsheet
+curl -X POST http://localhost:5001/api/convert \
+  -F "file=@data.xlsx"
+
+# PowerPoint presentation
+curl -X POST http://localhost:5001/api/convert \
+  -F "file=@presentation.pptx"
+```
+
+#### Option D: Provide Document URL
 
 ```bash
 curl -X POST http://localhost:5001/api/convert \
@@ -56,9 +82,15 @@ curl -X POST http://localhost:5001/api/convert \
 }
 ```
 
+**Supported Formats**:
+- PDF (`.pdf`)
+- Word (`.docx`)
+- Excel (`.xlsx`)
+- PowerPoint (`.pptx`)
+
 **Status Codes**:
 - `202 Accepted` - Task queued successfully
-- `400 Bad Request` - Invalid input (no file/URL, wrong format, empty file)
+- `400 Bad Request` - Invalid input (no file/URL, unsupported format, empty file)
 - `413 Payload Too Large` - File exceeds size limit
 
 ---
@@ -194,6 +226,68 @@ curl http://localhost:5001/api/cloud-storage/status
 ---
 
 ## Complete Workflow Examples
+
+### cURL Workflow (JSON Endpoints)
+
+```bash
+#!/usr/bin/env bash
+
+BASE_URL="http://localhost:5001"
+PDF_FILE="document.pdf"
+
+# Step 1: Submit PDF for conversion
+SUBMIT_RESPONSE=$(curl -s -X POST "$BASE_URL/api/convert" \
+  -F "file=@$PDF_FILE")
+
+TASK_ID=$(echo "$SUBMIT_RESPONSE" | jq -r '.task_id')
+echo "Task ID: $TASK_ID"
+
+# Step 2: Poll status until completed
+while true; do
+  STATUS_RESPONSE=$(curl -s "$BASE_URL/api/status/$TASK_ID")
+  STATUS=$(echo "$STATUS_RESPONSE" | jq -r '.status')
+  echo "Status: $STATUS"
+
+  if [ "$STATUS" = "completed" ]; then
+    MARKDOWN_URL=$(echo "$STATUS_RESPONSE" | jq -r '.markdown_url // empty')
+    if [ -n "$MARKDOWN_URL" ]; then
+      echo "Cloud Markdown URL: $MARKDOWN_URL"
+    fi
+    break
+  elif [ "$STATUS" = "failed" ]; then
+    echo "Conversion failed: $(echo "$STATUS_RESPONSE" | jq -r '.detail')"
+    exit 1
+  fi
+
+  sleep 3
+done
+
+# Step 3: Retrieve markdown as JSON (no file download needed)
+RESULT_JSON=$(curl -s "$BASE_URL/api/result/$TASK_ID/json")
+echo "$RESULT_JSON" | jq .
+
+# Optional: save markdown content from JSON
+echo "$RESULT_JSON" | jq -r '.markdown_content' > output.md
+echo "Markdown saved to output.md"
+```
+
+This end-to-end shell workflow keeps everything in JSON until the final save step, making it ideal for agentic systems that orchestrate downstream processing.
+
+```bash
+# Alternative: Submit by URL and stream JSON result to disk
+BASE_URL="http://localhost:5001"
+SOURCE_URL="https://example.com/manual.pdf"
+
+TASK_ID=$(curl -s -X POST "$BASE_URL/api/convert" \
+  -F "source_url=$SOURCE_URL" | jq -r '.task_id')
+
+curl -s "$BASE_URL/api/status/$TASK_ID" | jq
+
+# Single-call retrieval once completed
+curl -s "$BASE_URL/api/result/$TASK_ID/json" \
+  | tee result.json \
+  | jq -r '.markdown_content' > manual.md
+```
 
 ### Python Example (Synchronous)
 

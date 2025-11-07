@@ -68,9 +68,22 @@ class ConverterManager:
         self._lock = asyncio.Lock()
 
     def _select_device(self) -> str:
+        """Select the best available device based on GPU availability and memory."""
         if self.prefer_gpu:
             if torch.cuda.is_available():
-                return "cuda"
+                try:
+                    # Check if GPU has enough memory (at least 2GB free)
+                    gpu_mem_free = torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated(0)
+                    if gpu_mem_free > 2 * 1024 * 1024 * 1024:  # 2GB
+                        return "cuda"
+                    else:
+                        import logging
+                        logging.getLogger(__name__).warning(
+                            f"GPU has insufficient memory ({gpu_mem_free / 1024**3:.2f}GB free), using CPU"
+                        )
+                except Exception as e:
+                    import logging
+                    logging.getLogger(__name__).warning(f"Error checking GPU memory, using CPU: {e}")
             if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
                 return "mps"
         return "cpu"
@@ -98,12 +111,25 @@ class ConverterManager:
         try:
             result = await asyncio.to_thread(converter.convert, source)
         except torch.cuda.OutOfMemoryError as exc:
+            # GPU out of memory - fallback to CPU
+            import logging
+            logging.getLogger(__name__).warning(f"GPU OOM error, falling back to CPU: {exc}")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             if device != "cpu":
                 return await self.convert(source, force_device="cpu")
             raise RuntimeError("Docling conversion failed") from exc
+        except MemoryError as exc:
+            # System memory error - fallback to CPU if using GPU
+            import logging
+            logging.getLogger(__name__).warning(f"System memory error, falling back to CPU: {exc}")
+            if device != "cpu":
+                return await self.convert(source, force_device="cpu")
+            raise RuntimeError("Docling conversion failed due to insufficient memory") from exc
         except RuntimeError as exc:
+            # Generic runtime error - try CPU fallback
+            import logging
+            logging.getLogger(__name__).warning(f"Runtime error on {device}, attempting CPU fallback: {exc}")
             if device != "cpu":
                 return await self.convert(source, force_device="cpu")
             raise RuntimeError("Docling conversion failed") from exc
@@ -211,7 +237,9 @@ class TaskManager:
                     )
 
     async def _save_images(self, result: ConversionResult, task_id: str, images_dir: Path) -> dict[str, str]:
-        """Save picture and table images to disk and upload to cloud storage (sync mode).
+        """Save picture images to disk and upload to cloud storage (sync mode).
+        
+        Tables are exported as native Markdown tables by the serializer, not as images.
         
         Returns:
             Dictionary mapping element.self_ref to final URL/path (cloud URL or local path)
@@ -220,7 +248,6 @@ class TaskManager:
         _log = logging.getLogger(__name__)
         
         picture_counter = 0
-        table_counter = 0
         image_map: dict[str, str] = {}
         
         for element, _level in result.document.iterate_items():
@@ -249,25 +276,6 @@ class TaskManager:
                         # Fallback to local path on upload failure
                         _log.error(f"Cloud upload failed for {filename}, using local path: {e}")
                         image_map[element.self_ref] = str(Path("images") / task_id / filename)
-            
-            elif isinstance(element, TableItem):
-                table_counter += 1
-                filename = f"table-{table_counter}.png"
-                local_path = images_dir / filename
-                remote_key = f"images/{task_id}/{filename}"
-                
-                img = element.get_image(result.document)
-                if img:
-                    await asyncio.to_thread(img.save, local_path, "PNG")
-                    
-                    # Upload table images too
-                    try:
-                        await self.storage_backend.upload(local_path, remote_key)
-                        if not settings.cloud_keep_local_copy and self.storage_backend.is_enabled():
-                            if self.storage_backend.__class__.__name__ != "LocalStorage":
-                                local_path.unlink()
-                    except Exception as e:
-                        _log.error(f"Cloud upload failed for table {filename}: {e}")
         
         return image_map
 
@@ -400,8 +408,13 @@ async def submit_conversion(
     if file is not None:
         filename = file.filename or "document.pdf"
         suffix = Path(filename).suffix.lower() or ".pdf"
-        if suffix != ".pdf":
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only PDF uploads are supported")
+        # Supported formats: PDF and Microsoft Office documents
+        allowed_extensions = {".pdf", ".docx", ".xlsx", ".pptx"}
+        if suffix not in allowed_extensions:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unsupported file format. Allowed: {', '.join(sorted(allowed_extensions))}"
+            )
         data = await file.read()
         if not data:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded file is empty")

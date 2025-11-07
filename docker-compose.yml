@@ -19,15 +19,23 @@ services:
       - DOCLING_R2_REGION=${DOCLING_R2_REGION:-auto}
       - DOCLING_R2_PUBLIC_URL_BASE=${DOCLING_R2_PUBLIC_URL_BASE}
     ports:
-      - "5001:5001"
+      - "5010:5010"
     volumes:
       - ./storage/docling:/data
     deploy:
       resources:
+        limits:
+          memory: 8G  # Increase if you have more RAM available
         reservations:
+          memory: 4G
           devices:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
-#    restart: unless-stopped
-    restart: "no"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5010/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped  # Auto-restart on crashes

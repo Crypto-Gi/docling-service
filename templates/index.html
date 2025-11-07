@@ -10,7 +10,7 @@
     <main class="container">
       <h1>Docling Markdown Converter</h1>
       <p>
-        Upload a PDF (or provide a public URL) and Docling will convert it to
+        Upload a document (PDF, Word, Excel, PowerPoint) or provide a public URL and Docling will convert it to
         Markdown. GPU acceleration is used automatically when available.
       </p>
 
@@ -25,14 +25,14 @@
       <section class="panel">
         <form id="upload-form">
           <label class="field">
-            <span>Upload PDF</span>
-            <input type="file" name="file" id="file" accept="application/pdf" />
+            <span>Upload Document</span>
+            <input type="file" name="file" id="file" accept="application/pdf,.pdf,.docx,.xlsx,.pptx,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.openxmlformats-officedocument.presentationml.presentation" />
           </label>
           <p><strong>Limit:</strong> Files larger than {{ max_upload_mb }}&nbsp;MB cannot be uploaded.</p>
           <div class="divider">or</div>
           <label class="field">
             <span>Remote file URL</span>
-            <input type="url" name="source_url" id="source_url" placeholder="https://example.com/file.pdf" />
+            <input type="url" name="source_url" id="source_url" placeholder="https://example.com/document.pdf" />
           </label>
           <button type="submit" class="primary">Convert</button>
         </form>
