@@ -26,12 +26,25 @@ from .config import settings
 from .storage import create_storage_backend
 
 
+class CloudStorageConfig(BaseModel):
+    """Optional cloud storage configuration for per-request override."""
+    enabled: bool = True
+    provider: Literal["cloudflare_r2", "local"] = "cloudflare_r2"
+    r2_account_id: Optional[str] = None
+    r2_access_key_id: Optional[str] = None
+    r2_secret_access_key: Optional[str] = None
+    r2_bucket_name: Optional[str] = None
+    r2_region: str = "auto"
+    r2_public_url_base: Optional[str] = None
+
+
 @dataclass
 class ConversionSource:
     kind: Literal["upload", "url"]
     value: str
     original_name: Optional[str] = None
     file_path: Optional[Path] = None
+    cloud_storage_config: Optional[dict] = None
 
 
 @dataclass
@@ -46,6 +59,7 @@ class TaskState:
     source_kind: Literal["upload", "url"] = "upload"
     output_filename: Optional[str] = None
     markdown_url: Optional[str] = None
+    cloud_storage_config: Optional[dict] = None
 
 
 class TaskStatusResponse(BaseModel):
@@ -174,12 +188,14 @@ class TaskManager:
         asyncio.create_task(self._execute(task_id, source))
 
     async def _execute(self, task_id: str, source: ConversionSource) -> None:
+        # Create storage backend based on request-specific config or default settings
+        storage_backend = self._create_storage_backend(source.cloud_storage_config)
         await self._update(task_id, status="processing", detail=None)
         task_images_dir = self.images_dir / task_id
         task_images_dir.mkdir(parents=True, exist_ok=True)
         try:
             result = await self.converter.convert(source.value)
-            image_map = await self._save_images(result, task_id, task_images_dir)
+            image_map = await self._save_images(result, task_id, task_images_dir, storage_backend)
             await self._update_image_uris(result, image_map)
 
             serializer = MarkdownDocSerializer(
@@ -203,15 +219,8 @@ class TaskManager:
         
         # Upload markdown to cloud storage if enabled
         markdown_url = None
-        if self.storage_backend.is_enabled():
-            try:
-                remote_key = f"markdown/{task_id}/{output_filename}"
-                markdown_url = await self.storage_backend.upload(output_path, remote_key)
-                import logging
-                logging.getLogger(__name__).info(f"Uploaded markdown to cloud: {markdown_url}")
-            except Exception as e:
-                import logging
-                logging.getLogger(__name__).error(f"Failed to upload markdown to cloud: {e}")
+        if storage_backend.is_cloud_enabled():
+            markdown_url = await self._upload_markdown(output_path, task_id, source.original_name, storage_backend)
         
         await self._update(
             task_id,
@@ -222,6 +231,35 @@ class TaskManager:
         )
         if source.file_path and source.file_path.exists():
             await asyncio.to_thread(source.file_path.unlink)
+
+    def _create_storage_backend(self, custom_config: Optional[dict]):
+        """Create storage backend from custom config or default settings."""
+        if custom_config:
+            # Use custom configuration from request
+            from .storage.cloudflare_r2 import CloudflareR2Storage
+            from .storage.local import LocalStorage
+            
+            enabled = custom_config.get("enabled", True)
+            
+            if not enabled:
+                return LocalStorage({"base_path": settings.storage_path / "images"})
+            
+            provider = custom_config.get("provider", "cloudflare_r2").lower()
+            if provider == "cloudflare_r2":
+                # Merge custom config with .env defaults for partial overrides
+                return CloudflareR2Storage({
+                    "enabled": True,
+                    "account_id": custom_config.get("r2_account_id") or settings.r2_account_id,
+                    "access_key_id": custom_config.get("r2_access_key_id") or settings.r2_access_key_id,
+                    "secret_access_key": custom_config.get("r2_secret_access_key") or settings.r2_secret_access_key,
+                    "bucket_name": custom_config.get("r2_bucket_name") or settings.r2_bucket_name,
+                    "region": custom_config.get("r2_region") or settings.r2_region or "auto",
+                    "public_url_base": custom_config.get("r2_public_url_base") or settings.r2_public_url_base,
+                })
+            return LocalStorage({"base_path": settings.storage_path / "images"})
+        else:
+            # Use default settings from .env
+            return self.storage_backend
 
     async def _update_image_uris(self, result: ConversionResult, image_map: dict[str, str]) -> None:
         """Update image URIs in the document to reference saved file paths."""
@@ -236,7 +274,7 @@ class TaskManager:
                         uri=rel_path,
                     )
 
-    async def _save_images(self, result: ConversionResult, task_id: str, images_dir: Path) -> dict[str, str]:
+    async def _save_images(self, result: ConversionResult, task_id: str, images_dir: Path, storage_backend) -> dict[str, str]:
         """Save picture images to disk and upload to cloud storage (sync mode).
         
         Tables are exported as native Markdown tables by the serializer, not as images.
@@ -255,7 +293,7 @@ class TaskManager:
                 picture_counter += 1
                 filename = f"picture-{picture_counter}.png"
                 local_path = images_dir / filename
-                remote_key = f"images/{task_id}/{filename}"
+                cloud_key = f"images/{task_id}/{filename}"
                 
                 # Save locally first
                 img = element.get_image(result.document)
@@ -264,12 +302,12 @@ class TaskManager:
                     
                     # Upload to cloud storage if enabled (synchronous mode)
                     try:
-                        url = await self.storage_backend.upload(local_path, remote_key)
+                        url = await storage_backend.upload(local_path, cloud_key)
                         image_map[element.self_ref] = url
                         
                         # Optionally delete local copy after successful upload
-                        if not settings.cloud_keep_local_copy and self.storage_backend.is_enabled():
-                            if self.storage_backend.__class__.__name__ != "LocalStorage":
+                        if not settings.cloud_keep_local_copy and storage_backend.is_cloud_enabled():
+                            if storage_backend.__class__.__name__ != "LocalStorage":
                                 local_path.unlink()
                     
                     except Exception as e:
@@ -278,6 +316,21 @@ class TaskManager:
                         image_map[element.self_ref] = str(Path("images") / task_id / filename)
         
         return image_map
+
+    def _upload_markdown(self, md_path: Path, task_id: str, original_name: Optional[str], storage_backend) -> Optional[str]:
+        """Upload markdown file to cloud storage."""
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        filename = original_name or f"{task_id}.md"
+        if not filename.endswith(".md"):
+            filename = f"{filename}.md"
+        
+        cloud_key = f"markdown/{task_id}/{filename}"
+        url = storage_backend.upload(md_path, cloud_key)
+        if url:
+            logger.info(f"Uploaded markdown to {url}")
+        return url
 
     async def _update(self, task_id: str, **updates) -> None:
         async with self._lock:
@@ -401,9 +454,35 @@ async def submit_conversion(
     request: Request,
     file: UploadFile | None = File(None),
     source_url: str | None = Form(None),
+    # Optional cloud storage configuration (overrides .env settings)
+    cloud_storage_enabled: bool | None = Form(None),
+    r2_account_id: str | None = Form(None),
+    r2_access_key_id: str | None = Form(None),
+    r2_secret_access_key: str | None = Form(None),
+    r2_bucket_name: str | None = Form(None),
+    r2_region: str | None = Form(None),
+    r2_public_url_base: str | None = Form(None),
 ) -> ConvertResponse:
     if file is None and not source_url:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Provide a file or source_url")
+    
+    # Build custom cloud storage config if any parameters provided
+    cloud_storage_config = None
+    if any([cloud_storage_enabled is not None, r2_account_id, r2_access_key_id, r2_secret_access_key, r2_bucket_name]):
+        # Parse boolean value (FastAPI converts "false" string to False boolean)
+        enabled_value = cloud_storage_enabled if cloud_storage_enabled is not None else True
+        
+        cloud_storage_config = {
+            "enabled": enabled_value,
+            "provider": "cloudflare_r2",
+            "r2_account_id": r2_account_id,
+            "r2_access_key_id": r2_access_key_id,
+            "r2_secret_access_key": r2_secret_access_key,
+            "r2_bucket_name": r2_bucket_name,
+            "r2_region": r2_region or "auto",
+            "r2_public_url_base": r2_public_url_base,
+        }
+    
     task_id = uuid4().hex
     if file is not None:
         filename = file.filename or "document.pdf"
@@ -431,9 +510,14 @@ async def submit_conversion(
             value=str(upload_path),
             original_name=filename,
             file_path=upload_path,
+            cloud_storage_config=cloud_storage_config,
         )
     else:
-        source = ConversionSource(kind="url", value=source_url.strip())
+        source = ConversionSource(
+            kind="url",
+            value=source_url.strip(),
+            cloud_storage_config=cloud_storage_config,
+        )
     await manager.enqueue(task_id, source)
     return ConvertResponse(task_id=task_id)
 

@@ -72,3 +72,11 @@ class LocalStorage(StorageBackend):
             Always True for local storage
         """
         return True
+    
+    def is_cloud_enabled(self) -> bool:
+        """Check if this is a cloud storage backend.
+        
+        Returns:
+            False - this is local storage, not cloud
+        """
+        return False

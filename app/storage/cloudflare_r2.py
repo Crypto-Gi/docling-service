@@ -170,3 +170,11 @@ class CloudflareR2Storage(StorageBackend):
             True if R2 client is initialized and ready, False otherwise
         """
         return self.enabled and self.client is not None
+    
+    def is_cloud_enabled(self) -> bool:
+        """Check if this is a cloud storage backend.
+        
+        Returns:
+            True - this is cloud storage (Cloudflare R2)
+        """
+        return True

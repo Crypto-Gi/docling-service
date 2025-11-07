@@ -71,3 +71,12 @@ class StorageBackend(ABC):
             True if backend is ready to use, False otherwise
         """
         pass
+    
+    @abstractmethod
+    def is_cloud_enabled(self) -> bool:
+        """Check if this is a cloud storage backend (not local).
+        
+        Returns:
+            True if this is a cloud backend (R2, S3, etc.), False for local storage
+        """
+        pass
