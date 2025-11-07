@@ -243,10 +243,13 @@ docling-service/
 
 ## Version History
 
-- **v1.4** (Current): Multi-format support, GPU/CPU control, memory management
+- **v1.5** (Current): Per-request cloud storage credentials, enable/disable flag, credential merging
+- **v1.4**: Multi-format support, GPU/CPU control, memory management
 - **v1.3**: Cloud storage integration (Cloudflare R2)
 - **v1.2**: UI improvements, progress tracking
 - **v1.0**: Initial release (PDF to Markdown)
+
+See [RELEASE_v1.5.md](RELEASE_v1.5.md) for complete v1.5 documentation.
 
 ## Troubleshooting Guide
 
