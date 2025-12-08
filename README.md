@@ -11,6 +11,8 @@ Docling Service is a production-ready document conversion API that transforms co
 - 📊 **Smart table conversion**: Native Markdown tables (not images)
 - 🖼️ **Image extraction**: Automatic extraction and cloud upload
 - 🎯 **AI-optimized output**: Clean Markdown perfect for LLMs
+- 📍 **Position tracking**: Bounding boxes and normalized coordinates for images/tables
+- 📑 **Page markers**: Automatic page number injection in markdown output
 
 ### Performance & Reliability
 - ⚡ **GPU acceleration**: 3-4x faster processing with CUDA support
@@ -104,6 +106,8 @@ docker compose down
 | `/api/convert` | POST (multipart/form-data) | Submit a PDF or URL for conversion |
 | `/api/status/{task_id}` | GET | Poll task status (pending, processing, completed, failed) |
 | `/api/result/{task_id}` | GET | Download resulting Markdown |
+| `/api/result/{task_id}/json` | GET | Get markdown content as JSON |
+| `/api/result/{task_id}/enhanced` | GET | **Full document with images/tables positions and metadata** |
 | `/api/cloud-storage/status` | GET | Inspect active storage backend configuration |
 
 **Interactive API documentation**: `http://localhost:5010/docs`
@@ -132,6 +136,17 @@ curl -O -J http://localhost:5010/api/result/abc123
 ```bash
 curl http://localhost:5010/api/result/abc123/json
 ```
+
+**Get enhanced response with image/table positions (ideal for AI/LLM):**
+```bash
+curl http://localhost:5010/api/result/abc123/enhanced
+```
+
+Response includes:
+- Full markdown content with page markers (`<!-- Page N -->`)
+- Images array with page numbers, bounding boxes, and normalized coordinates
+- Tables array with page numbers, positions, row/column counts
+- Document metadata with page dimensions
 
 ## Cloud Storage Setup
 
@@ -241,9 +256,82 @@ docling-service/
 
 **Note**: Tables are converted to native Markdown format (not images) for better AI processing.
 
+## Enhanced API Response (v1.6)
+
+The `/api/result/{task_id}/enhanced` endpoint returns comprehensive document metadata ideal for AI/LLM processing:
+
+### Sample Response
+
+```json
+{
+  "task_id": "abc123",
+  "markdown_content": "<!-- Page 1 -->\n## Document Title\n...",
+  "images": [
+    {
+      "id": "picture-1",
+      "url": "https://cdn.example.com/images/abc123/picture-1.png",
+      "page": 1,
+      "position": {
+        "x": 88.04,
+        "y": 553.29,
+        "width": 434.83,
+        "height": 155.54,
+        "coord_origin": "BOTTOMLEFT",
+        "x_norm": 0.1439,
+        "y_norm": 0.6986,
+        "width_norm": 0.7105,
+        "height_norm": 0.1964
+      },
+      "page_dimensions": {"width": 612, "height": 792},
+      "mimetype": "image/png"
+    }
+  ],
+  "tables": [
+    {
+      "id": "table-1",
+      "page": 1,
+      "position": {"x": 88.04, "y": 553.29, "...": "..."},
+      "page_dimensions": {"width": 612, "height": 792},
+      "num_rows": 8,
+      "num_cols": 5
+    }
+  ],
+  "metadata": {
+    "total_pages": 3,
+    "total_images": 2,
+    "total_tables": 3,
+    "processing_time_ms": 21567,
+    "page_dimensions": [
+      {"width": 612, "height": 792},
+      {"width": 612, "height": 792},
+      {"width": 612, "height": 792}
+    ]
+  }
+}
+```
+
+### Coordinate Systems
+
+| Type | Fields | Description |
+|------|--------|-------------|
+| **Absolute** | `x`, `y`, `width`, `height` | PDF points (1 pt = 1/72 inch) |
+| **Normalized** | `x_norm`, `y_norm`, `width_norm`, `height_norm` | 0-1 range, resolution-independent |
+
+### Markdown Output Features
+
+- **Page markers**: `<!-- Page N -->` inserted at page boundaries
+- **Metadata block**: JSON metadata appended at end of `.md` file between `<!-- DOCLING_METADATA_START -->` and `<!-- DOCLING_METADATA_END -->`
+
+### Query Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `include_normalized` | `true` | Include normalized coordinates (0-1 range) |
+
 ## Version History
 
-- **v1.5** (Current): Per-request cloud storage credentials, enable/disable flag, credential merging
+- **v1.6** (Current): Enhanced API with image/table positions, page markers, normalized coordinates
+- **v1.5**: Per-request cloud storage credentials, enable/disable flag, credential merging
 - **v1.4**: Multi-format support, GPU/CPU control, memory management
 - **v1.3**: Cloud storage integration (Cloudflare R2)
 - **v1.2**: UI improvements, progress tracking

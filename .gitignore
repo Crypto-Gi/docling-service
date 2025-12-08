@@ -32,6 +32,15 @@ pytest_cache/
 
 # Project data
 storage/
+
+# Explicitly ignore generated outputs and images (already under storage/)
+storage/docling/outputs/
+storage/docling/images/
+
+# Sample / test documents
+201774_QSG-Ear_EC-S-P_latest.pdf
+test_document.pdf
+
 .env
 !.env.example
 
