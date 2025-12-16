@@ -178,3 +178,69 @@ class CloudflareR2Storage(StorageBackend):
             True - this is cloud storage (Cloudflare R2)
         """
         return True
+
+    async def object_exists(self, remote_key: str) -> bool:
+        """Check if an object exists in R2 using head_object.
+        
+        Args:
+            remote_key: R2 object key to check
+            
+        Returns:
+            True if object exists, False otherwise
+        """
+        if not self.is_enabled():
+            return False
+        
+        try:
+            def _head():
+                self.client.head_object(Bucket=self.bucket_name, Key=remote_key)
+            
+            await asyncio.to_thread(_head)
+            return True
+        except ClientError as e:
+            # 404 means object doesn't exist
+            if e.response.get("Error", {}).get("Code") == "404":
+                return False
+            _log.error(f"R2 head_object failed for {remote_key}: {e}")
+            return False
+        except Exception as e:
+            _log.error(f"Unexpected error during R2 head_object: {e}")
+            return False
+
+    async def upload_bytes(self, data: bytes, remote_key: str, content_type: str = "image/png") -> str:
+        """Upload bytes directly to Cloudflare R2 and return public URL.
+        
+        Args:
+            data: Raw bytes to upload
+            remote_key: R2 object key (e.g., "images/{xxhash}.png")
+            content_type: MIME type of the content
+            
+        Returns:
+            Public URL to access the uploaded file
+            
+        Raises:
+            RuntimeError: If upload fails or R2 is not enabled
+        """
+        if not self.is_enabled():
+            raise RuntimeError("Cloudflare R2 storage not enabled or configured")
+        
+        try:
+            def _upload():
+                self.client.put_object(
+                    Bucket=self.bucket_name,
+                    Key=remote_key,
+                    Body=data,
+                    ContentType=content_type,
+                )
+            
+            await asyncio.to_thread(_upload)
+            url = self.get_url(remote_key)
+            _log.info(f"Uploaded {len(data)} bytes to R2: {url}")
+            return url
+        
+        except ClientError as e:
+            _log.error(f"R2 upload_bytes failed for {remote_key}: {e}")
+            raise RuntimeError(f"R2 upload failed: {e}") from e
+        except Exception as e:
+            _log.error(f"Unexpected error during R2 upload_bytes: {e}")
+            raise RuntimeError(f"R2 upload failed: {e}") from e

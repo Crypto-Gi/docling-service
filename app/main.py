@@ -9,7 +9,9 @@ from typing import Any, Literal, Optional
 from uuid import uuid4
 
 import torch
+import xxhash
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, status
+import pypdfium2 as pdfium
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -46,6 +48,7 @@ class ConversionSource:
     original_name: Optional[str] = None
     file_path: Optional[Path] = None
     cloud_storage_config: Optional[dict] = None
+    callback_url: Optional[str] = None  # Webhook URL to POST result when done
 
 
 # Enhanced response models for image metadata
@@ -104,6 +107,12 @@ class DocumentMetadata(BaseModel):
     page_dimensions: Optional[list[PageDimensions]] = None  # Dimensions per page
 
 
+class ProgressInfo(BaseModel):
+    """Progress information for long-running conversions."""
+    total_pages: Optional[int] = None
+    elapsed_seconds: Optional[float] = None
+
+
 @dataclass
 class TaskState:
     task_id: str
@@ -122,6 +131,11 @@ class TaskState:
     tables_metadata: Optional[list] = None  # List of TableInfo dicts
     document_metadata: Optional[dict] = None  # DocumentMetadata dict
     page_dimensions: Optional[list] = None  # List of {width, height} per page
+    # Progress tracking
+    total_pages: Optional[int] = None  # Pre-counted PDF pages
+    processing_started_at: Optional[datetime] = None  # When conversion started
+    # Webhook callback
+    callback_url: Optional[str] = None  # URL to POST result when done
 
 
 class TaskStatusResponse(BaseModel):
@@ -135,6 +149,7 @@ class TaskStatusResponse(BaseModel):
     updated_at: datetime
     output_filename: Optional[str] = None
     markdown_url: Optional[str] = None
+    progress: Optional[ProgressInfo] = None  # Progress info during processing
 
 
 class ConverterManager:
@@ -249,10 +264,36 @@ class TaskManager:
             self._tasks[task_id] = state
         asyncio.create_task(self._execute(task_id, source))
 
+    def _count_pdf_pages(self, file_path: Path) -> Optional[int]:
+        """Count pages in a PDF file using pypdfium2."""
+        try:
+            if file_path.suffix.lower() == '.pdf':
+                pdf = pdfium.PdfDocument(str(file_path))
+                page_count = len(pdf)
+                pdf.close()
+                return page_count
+        except Exception:
+            pass
+        return None
+
     async def _execute(self, task_id: str, source: ConversionSource) -> None:
         # Create storage backend based on request-specific config or default settings
         storage_backend = self._create_storage_backend(source.cloud_storage_config)
-        await self._update(task_id, status="processing", detail=None)
+        
+        # Pre-count PDF pages before conversion
+        total_pages = None
+        if source.file_path and source.file_path.exists():
+            total_pages = await asyncio.to_thread(self._count_pdf_pages, source.file_path)
+        
+        processing_started_at = datetime.utcnow()
+        await self._update(
+            task_id, 
+            status="processing", 
+            detail=None,
+            total_pages=total_pages,
+            processing_started_at=processing_started_at,
+            callback_url=source.callback_url,
+        )
         task_images_dir = self.images_dir / task_id
         task_images_dir.mkdir(parents=True, exist_ok=True)
         start_time = datetime.utcnow()
@@ -261,14 +302,6 @@ class TaskManager:
             image_map, images_metadata = await self._save_images(result, task_id, task_images_dir, storage_backend)
             await self._update_image_uris(result, image_map)
 
-            serializer = MarkdownDocSerializer(
-                doc=result.document,
-                params=MarkdownParams(
-                    image_mode=ImageRefMode.REFERENCED,
-                ),
-            )
-            markdown = serializer.serialize().text
-            
             # Extract table metadata with positions
             tables_metadata = self._extract_tables(result)
             
@@ -293,8 +326,8 @@ class TaskManager:
                 "page_dimensions": page_dimensions_list,
             }
             
-            # Inject page markers into markdown
-            markdown = self._inject_page_markers(result, markdown)
+            # Generate markdown with page markers using per-page serialization
+            markdown = self._inject_page_markers_per_page(result)
             
             # Append metadata block to markdown
             metadata_block = self._create_metadata_block(
@@ -305,6 +338,8 @@ class TaskManager:
         except Exception as exc:  # noqa: BLE001
             detail = str(exc)
             await self._update(task_id, status="failed", detail=detail)
+            # Send webhook callback on failure
+            await self._send_webhook_callback(task_id)
             if source.file_path and source.file_path.exists():
                 await asyncio.to_thread(source.file_path.unlink)
             return
@@ -330,6 +365,8 @@ class TaskManager:
             document_metadata=document_metadata,
             page_dimensions=page_dimensions_list,
         )
+        # Send webhook callback on completion
+        await self._send_webhook_callback(task_id)
         if source.file_path and source.file_path.exists():
             await asyncio.to_thread(source.file_path.unlink)
 
@@ -391,70 +428,58 @@ class TaskManager:
                     }
         return page_dims
 
-    def _inject_page_markers(self, result: ConversionResult, markdown: str) -> str:
-        """Inject page number markers into the markdown content.
+    def _inject_page_markers_per_page(self, result: ConversionResult) -> str:
+        """Generate markdown with page markers by serializing page-by-page.
         
-        Inserts markers like '<!-- Page N -->' at appropriate positions based on
-        where document elements appear on each page.
+        This approach ensures exactly one '<!-- Page N -->' marker per page
+        in correct sequential order, avoiding the issues with text-matching.
+        
+        Returns:
+            Markdown string with page markers inserted at the start of each page's content.
         """
-        # Build a map of which elements appear on which page
-        page_elements: dict[int, list[tuple[str, int]]] = {}  # page -> [(text_snippet, char_position)]
+        total_pages = len(result.document.pages) if hasattr(result.document, 'pages') and result.document.pages else 0
         
-        for element, _level in result.document.iterate_items():
-            if hasattr(element, 'prov') and element.prov and len(element.prov) > 0:
-                prov = element.prov[0]
-                page_no = prov.page_no if hasattr(prov, 'page_no') else (prov.page if hasattr(prov, 'page') else None)
+        if total_pages == 0:
+            # Fallback: serialize entire document without page markers
+            serializer = MarkdownDocSerializer(
+                doc=result.document,
+                params=MarkdownParams(
+                    image_mode=ImageRefMode.REFERENCED,
+                ),
+            )
+            return serializer.serialize().text
+        
+        # Serialize page-by-page and prepend markers
+        page_markdowns: list[str] = []
+        
+        for idx, page_no in enumerate(sorted(result.document.pages.keys())):
+            try:
+                serializer = MarkdownDocSerializer(
+                    doc=result.document,
+                    params=MarkdownParams(
+                        image_mode=ImageRefMode.REFERENCED,
+                        pages=[page_no],
+                    ),
+                )
+                page_md = serializer.serialize().text.strip()
                 
-                if page_no is not None:
-                    # Get a text snippet to locate in markdown
-                    text_snippet = None
-                    if hasattr(element, 'text') and element.text:
-                        # Take first 50 chars of text for matching
-                        text_snippet = element.text[:50].strip()
-                    
-                    if text_snippet and len(text_snippet) > 10:
-                        pos = markdown.find(text_snippet)
-                        if pos >= 0:
-                            if page_no not in page_elements:
-                                page_elements[page_no] = []
-                            page_elements[page_no].append((text_snippet, pos))
+                if page_md:
+                    page_markdowns.append(f"<!-- Page {page_no} -->\n\n{page_md}")
+            except Exception:
+                # If per-page serialization fails, skip this page
+                pass
         
-        if not page_elements:
-            return markdown
+        if not page_markdowns:
+            # Fallback: serialize entire document with Page 1 marker
+            serializer = MarkdownDocSerializer(
+                doc=result.document,
+                params=MarkdownParams(
+                    image_mode=ImageRefMode.REFERENCED,
+                ),
+            )
+            return f"<!-- Page 1 -->\n\n{serializer.serialize().text}"
         
-        # Find the first occurrence position for each page
-        page_positions: list[tuple[int, int]] = []  # (position, page_no)
-        for page_no, elements in page_elements.items():
-            if elements:
-                # Use the earliest position for this page
-                min_pos = min(pos for _, pos in elements)
-                page_positions.append((min_pos, page_no))
-        
-        # Sort by position
-        page_positions.sort(key=lambda x: x[0])
-        
-        # Insert page markers from end to beginning (to preserve positions)
-        result_md = markdown
-        inserted_pages = set()
-        
-        for pos, page_no in reversed(page_positions):
-            if page_no not in inserted_pages:
-                # Find the start of the line
-                line_start = result_md.rfind('\n', 0, pos)
-                if line_start == -1:
-                    line_start = 0
-                else:
-                    line_start += 1
-                
-                marker = f"\n\n<!-- Page {page_no} -->\n\n"
-                result_md = result_md[:line_start] + marker + result_md[line_start:]
-                inserted_pages.add(page_no)
-        
-        # Ensure Page 1 marker exists at the beginning if not already
-        if 1 not in inserted_pages:
-            result_md = "<!-- Page 1 -->\n\n" + result_md
-        
-        return result_md
+        return "\n\n".join(page_markdowns)
 
     def _create_metadata_block(
         self,
@@ -523,7 +548,16 @@ class TaskManager:
     async def _save_images(
         self, result: ConversionResult, task_id: str, images_dir: Path, storage_backend
     ) -> tuple[dict[str, str], list[dict]]:
-        """Save picture images to disk and upload to cloud storage (sync mode).
+        """Save picture images with xxhash-based deduplication.
+        
+        Uses content hash (xxhash) as the storage key to automatically deduplicate
+        identical images across different documents. If an image with the same hash
+        already exists in storage, reuses the existing URL instead of re-uploading.
+        
+        Filters out:
+        - Small images (< 50x50 pixels) - icons, bullets, decorations
+        - Header/footer images (top/bottom 5% of page) - logos, page numbers
+        - Tiny area images (< 0.5% of page area) - decorative elements
         
         Tables are exported as native Markdown tables by the serializer, not as images.
         
@@ -532,10 +566,18 @@ class TaskManager:
             - Dictionary mapping element.self_ref to final URL/path (cloud URL or local path)
             - List of ImageInfo dicts with page numbers, positions, and page dimensions
         """
+        import io
         import logging
         _log = logging.getLogger(__name__)
         
+        # Image filtering thresholds
+        MIN_IMAGE_WIDTH_PX = 50      # Minimum width in pixels
+        MIN_IMAGE_HEIGHT_PX = 50     # Minimum height in pixels
+        HEADER_FOOTER_MARGIN = 0.05  # Top/bottom 5% of page = header/footer zone
+        MIN_AREA_RATIO = 0.005       # Minimum 0.5% of page area
+        
         picture_counter = 0
+        skipped_counter = 0
         image_map: dict[str, str] = {}
         images_metadata: list[dict] = []
         
@@ -546,9 +588,6 @@ class TaskManager:
             if isinstance(element, PictureItem):
                 picture_counter += 1
                 image_id = f"picture-{picture_counter}"
-                filename = f"{image_id}.png"
-                local_path = images_dir / filename
-                cloud_key = f"images/{task_id}/{filename}"
                 
                 # Extract page number and position from provenance
                 page_number = 1  # Default to page 1
@@ -597,31 +636,114 @@ class TaskManager:
                 if hasattr(element, 'caption') and element.caption:
                     alt_text = element.caption.text if hasattr(element.caption, 'text') else str(element.caption)
                 
-                # Save locally first
+                # Get image and convert to bytes for hashing
                 img = element.get_image(result.document)
-                url = str(Path("images") / task_id / filename)  # Default local path
+                url = None
                 image_size = None
+                content_hash = None
                 
                 if img:
-                    await asyncio.to_thread(img.save, local_path, "PNG")
                     image_size = {"width": img.width, "height": img.height}
                     
-                    # Upload to cloud storage if enabled (synchronous mode)
-                    try:
-                        cloud_url = await storage_backend.upload(local_path, cloud_key)
-                        image_map[element.self_ref] = cloud_url
-                        url = cloud_url
-                        
-                        # Optionally delete local copy after successful upload
-                        if not settings.cloud_keep_local_copy and storage_backend.is_cloud_enabled():
-                            if storage_backend.__class__.__name__ != "LocalStorage":
-                                local_path.unlink()
+                    # === IMAGE FILTERING ===
+                    skip_reason = None
                     
-                    except Exception as e:
-                        # Fallback to local path on upload failure
-                        _log.error(f"Cloud upload failed for {filename}, using local path: {e}")
+                    # Filter 1: Skip small images (< 50x50 pixels)
+                    if img.width < MIN_IMAGE_WIDTH_PX or img.height < MIN_IMAGE_HEIGHT_PX:
+                        skip_reason = f"too small ({img.width}x{img.height}px)"
+                    
+                    # Filter 2: Skip header/footer images (top/bottom 5% of page)
+                    # Only skip if image ENTIRELY fits within header/footer zone
+                    # If image extends beyond the zone, keep it (it's content, not decoration)
+                    if not skip_reason and position_data and page_dimensions:
+                        ph = page_dimensions.get("height", 0)
+                        if ph > 0:
+                            coord_origin = position_data.get("coord_origin", "BOTTOMLEFT")
+                            bbox_y = position_data.get("y", 0)
+                            img_height = position_data.get("height", 0)
+                            
+                            # Calculate top and bottom edges based on coordinate origin
+                            if "TOP" in coord_origin.upper():
+                                # TOPLEFT: y=0 is top of page, y increases downward
+                                bbox_top_from_bottom = ph - bbox_y           # Convert to bottom-up
+                                bbox_bottom_from_bottom = ph - bbox_y - img_height
+                            else:
+                                # BOTTOMLEFT (default): y=0 is bottom, y increases upward
+                                # bbox.t is the top edge (higher y value)
+                                bbox_top_from_bottom = bbox_y
+                                bbox_bottom_from_bottom = bbox_y - img_height
+                            
+                            # Clamp to valid range [0, ph] to handle edge cases
+                            bbox_top_from_bottom = max(0, min(ph, bbox_top_from_bottom))
+                            bbox_bottom_from_bottom = max(0, min(ph, bbox_bottom_from_bottom))
+                            
+                            header_threshold = (1 - HEADER_FOOTER_MARGIN) * ph  # e.g., 95% of page height
+                            footer_threshold = HEADER_FOOTER_MARGIN * ph        # e.g., 5% of page height
+                            
+                            # Header: skip only if entire image is in top 5% (both edges above threshold)
+                            if bbox_bottom_from_bottom > header_threshold:
+                                skip_reason = f"entirely in header zone (bottom={bbox_bottom_from_bottom:.1f} > {header_threshold:.1f})"
+                            # Footer: skip only if entire image is in bottom 5% (both edges below threshold)
+                            elif bbox_top_from_bottom < footer_threshold:
+                                skip_reason = f"entirely in footer zone (top={bbox_top_from_bottom:.1f} < {footer_threshold:.1f})"
+                    
+                    # Filter 3: Skip tiny area images (< 0.5% of page area)
+                    if not skip_reason and position_data and page_dimensions:
+                        pw = page_dimensions.get("width", 0)
+                        ph = page_dimensions.get("height", 0)
+                        if pw > 0 and ph > 0:
+                            page_area = pw * ph
+                            img_area = position_data.get("width", 0) * position_data.get("height", 0)
+                            area_ratio = img_area / page_area
+                            if area_ratio < MIN_AREA_RATIO:
+                                skip_reason = f"tiny area ({area_ratio*100:.2f}% < {MIN_AREA_RATIO*100:.1f}%)"
+                    
+                    if skip_reason:
+                        skipped_counter += 1
+                        pos_info = f", pos=y:{position_data.get('y', 0):.1f} h:{position_data.get('height', 0):.1f}" if position_data else ""
+                        _log.info(f"Skipped {image_id}: {skip_reason} (size={img.width}x{img.height}px{pos_info})")
+                        # Still add to image_map with placeholder to maintain references
+                        image_map[element.self_ref] = ""
+                        continue
+                    
+                    # === END FILTERING ===
+                    
+                    # Convert image to PNG bytes
+                    img_buffer = io.BytesIO()
+                    await asyncio.to_thread(img.save, img_buffer, "PNG")
+                    img_bytes = img_buffer.getvalue()
+                    
+                    # Compute xxhash of image content
+                    content_hash = xxhash.xxh64(img_bytes).hexdigest()
+                    cloud_key = f"images/{content_hash}.png"
+                    
+                    # Check if image already exists in storage (deduplication)
+                    try:
+                        if await storage_backend.object_exists(cloud_key):
+                            # Image already exists, reuse URL
+                            url = storage_backend.get_url(cloud_key)
+                            _log.info(f"Dedup: reusing existing image {content_hash}.png for {image_id}")
+                        else:
+                            # Upload new image with hash-based key
+                            url = await storage_backend.upload_bytes(img_bytes, cloud_key, "image/png")
+                            _log.info(f"Uploaded new image {content_hash}.png for {image_id}")
+                        
                         image_map[element.self_ref] = url
+                        
+                    except Exception as e:
+                        # Fallback: save locally with task-specific path
+                        _log.error(f"Cloud upload failed for {image_id}, falling back to local: {e}")
+                        local_path = images_dir / f"{image_id}.png"
+                        await asyncio.to_thread(img.save, local_path, "PNG")
+                        url = str(Path("images") / task_id / f"{image_id}.png")
+                        image_map[element.self_ref] = url
+                    
+                    # Yield control periodically to prevent blocking event loop
+                    if picture_counter % 10 == 0:
+                        await asyncio.sleep(0)
                 else:
+                    # No image data, use placeholder path
+                    url = str(Path("images") / task_id / f"{image_id}.png")
                     image_map[element.self_ref] = url
                 
                 # Build ImageInfo dict
@@ -635,8 +757,13 @@ class TaskManager:
                     "description": None,  # For VLM enrichment later
                     "mimetype": "image/png",
                     "size": image_size,
+                    "content_hash": content_hash,  # Include hash for reference
                 }
                 images_metadata.append(image_info)
+        
+        # Log filtering summary
+        if skipped_counter > 0:
+            _log.info(f"Image filtering: {len(images_metadata)} saved, {skipped_counter} skipped (small/header/footer/tiny)")
         
         return image_map, images_metadata
 
@@ -749,6 +876,44 @@ class TaskManager:
                 setattr(state, key, value)
             state.updated_at = datetime.utcnow()
 
+    async def _send_webhook_callback(self, task_id: str) -> None:
+        """Send webhook callback if callback_url is configured."""
+        import logging
+        import httpx
+        logger = logging.getLogger(__name__)
+        
+        state = await self.get(task_id)
+        if state is None or not state.callback_url:
+            return
+        
+        # Build callback payload
+        payload = {
+            "task_id": state.task_id,
+            "status": state.status,
+            "detail": state.detail,
+            "source_name": state.source_name,
+            "source_kind": state.source_kind,
+            "created_at": state.created_at.isoformat() if state.created_at else None,
+            "updated_at": state.updated_at.isoformat() if state.updated_at else None,
+            "output_filename": state.output_filename,
+            "markdown_url": state.markdown_url,
+            "total_pages": state.total_pages,
+        }
+        
+        if state.status == "completed" and state.document_metadata:
+            payload["processing_time_ms"] = state.document_metadata.get("processing_time_ms")
+        
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    state.callback_url,
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                )
+                logger.info(f"Webhook callback sent to {state.callback_url}: {response.status_code}")
+        except Exception as e:
+            logger.warning(f"Failed to send webhook callback to {state.callback_url}: {e}")
+
     async def get(self, task_id: str) -> Optional[TaskState]:
         async with self._lock:
             state = self._tasks.get(task_id)
@@ -770,6 +935,9 @@ class TaskManager:
                 tables_metadata=state.tables_metadata,
                 document_metadata=state.document_metadata,
                 page_dimensions=state.page_dimensions,
+                total_pages=state.total_pages,
+                processing_started_at=state.processing_started_at,
+                callback_url=state.callback_url,
             )
 
     async def enforce_upload_limit(self, *, exclude: set[Path] | None = None) -> None:
@@ -867,6 +1035,8 @@ async def submit_conversion(
     request: Request,
     file: UploadFile | None = File(None),
     source_url: str | None = Form(None),
+    # Optional webhook callback URL
+    callback_url: str | None = Form(None),
     # Optional cloud storage configuration (overrides .env settings)
     cloud_storage_enabled: bool | None = Form(None),
     r2_account_id: str | None = Form(None),
@@ -924,12 +1094,14 @@ async def submit_conversion(
             original_name=filename,
             file_path=upload_path,
             cloud_storage_config=cloud_storage_config,
+            callback_url=callback_url,
         )
     else:
         source = ConversionSource(
             kind="url",
             value=source_url.strip(),
             cloud_storage_config=cloud_storage_config,
+            callback_url=callback_url,
         )
     await manager.enqueue(task_id, source)
     return ConvertResponse(task_id=task_id)
@@ -943,6 +1115,16 @@ async def get_status(request: Request, task_id: str) -> TaskStatusResponse:
     download_url: Optional[str] = None
     if state.status == "completed" and state.output_path is not None:
         download_url = str(request.url_for("download_markdown", task_id=task_id))
+    
+    # Build progress info for processing tasks
+    progress = None
+    if state.status == "processing" and state.processing_started_at:
+        elapsed = (datetime.utcnow() - state.processing_started_at).total_seconds()
+        progress = ProgressInfo(
+            total_pages=state.total_pages,
+            elapsed_seconds=round(elapsed, 1),
+        )
+    
     return TaskStatusResponse(
         task_id=state.task_id,
         status=state.status,
@@ -954,6 +1136,7 @@ async def get_status(request: Request, task_id: str) -> TaskStatusResponse:
         updated_at=state.updated_at,
         output_filename=state.output_filename,
         markdown_url=state.markdown_url,
+        progress=progress,
     )
 
 

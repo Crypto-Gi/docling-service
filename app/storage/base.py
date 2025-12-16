@@ -80,3 +80,32 @@ class StorageBackend(ABC):
             True if this is a cloud backend (R2, S3, etc.), False for local storage
         """
         pass
+
+    @abstractmethod
+    async def object_exists(self, remote_key: str) -> bool:
+        """Check if an object exists in storage.
+        
+        Args:
+            remote_key: Remote object key/path to check
+            
+        Returns:
+            True if object exists, False otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def upload_bytes(self, data: bytes, remote_key: str, content_type: str = "image/png") -> str:
+        """Upload raw bytes to storage and return public URL.
+        
+        Args:
+            data: Raw bytes to upload
+            remote_key: Remote object key/path (e.g., "images/{xxhash}.png")
+            content_type: MIME type of the content
+            
+        Returns:
+            Public URL or relative path to access the uploaded file
+            
+        Raises:
+            RuntimeError: If upload fails
+        """
+        pass

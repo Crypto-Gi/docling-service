@@ -330,7 +330,8 @@ The `/api/result/{task_id}/enhanced` endpoint returns comprehensive document met
 
 ## Version History
 
-- **v1.6** (Current): Enhanced API with image/table positions, page markers, normalized coordinates
+- **v1.7** (Current): Progress reporting in status (total pages + elapsed time), optional webhook callback on completion/failure, and robust post-processing image filtering (skip tiny images / true header-footer artifacts)
+- **v1.6**: Enhanced API with image/table positions, page markers, normalized coordinates
 - **v1.5**: Per-request cloud storage credentials, enable/disable flag, credential merging
 - **v1.4**: Multi-format support, GPU/CPU control, memory management
 - **v1.3**: Cloud storage integration (Cloudflare R2)

@@ -41,6 +41,12 @@ storage/docling/images/
 201774_QSG-Ear_EC-S-P_latest.pdf
 test_document.pdf
 
+# Local ad-hoc docs / generated artifacts (do not commit)
+Tech_docs_ec_*.pdf
+markdown_*.md
+migration_mapping.json
+Dockerfile.rtx4
+
 .env
 !.env.example
 

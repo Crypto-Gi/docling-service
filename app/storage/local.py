@@ -80,3 +80,31 @@ class LocalStorage(StorageBackend):
             False - this is local storage, not cloud
         """
         return False
+
+    async def object_exists(self, remote_key: str) -> bool:
+        """Check if a file exists in local storage.
+        
+        Args:
+            remote_key: Remote key (e.g., "images/{xxhash}.png")
+            
+        Returns:
+            True if file exists, False otherwise
+        """
+        file_path = self.base_path / remote_key
+        return file_path.exists()
+
+    async def upload_bytes(self, data: bytes, remote_key: str, content_type: str = "image/png") -> str:
+        """Save bytes directly to local storage.
+        
+        Args:
+            data: Raw bytes to save
+            remote_key: Remote key (e.g., "images/{xxhash}.png")
+            content_type: MIME type (unused for local storage)
+            
+        Returns:
+            Relative path for Markdown references
+        """
+        file_path = self.base_path / remote_key
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_bytes(data)
+        return str(Path("images") / remote_key)

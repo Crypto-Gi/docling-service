@@ -1,6 +1,4 @@
-FROM python:3.11-slim
-
-ARG ENABLE_CUDA=false
+FROM pytorch/pytorch:2.7.0-cuda12.8-cudnn9-runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
@@ -25,11 +23,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt /tmp/requirements.txt
 
 RUN pip install --upgrade pip && \
-    if [ "$ENABLE_CUDA" = "true" ]; then \
-        pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu121 torch==2.3.1 torchvision==0.18.1; \
-    else \
-        pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu torch==2.3.1 torchvision==0.18.1; \
-    fi && \
     pip install --no-cache-dir -r /tmp/requirements.txt && \
     rm /tmp/requirements.txt
 
