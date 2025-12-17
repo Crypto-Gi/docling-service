@@ -34,6 +34,16 @@
             <span>Remote file URL</span>
             <input type="url" name="source_url" id="source_url" placeholder="https://example.com/document.pdf" />
           </label>
+          
+          <details class="advanced-options">
+            <summary>Advanced Options</summary>
+            <label class="field">
+              <span>Webhook Callback URL (optional)</span>
+              <input type="url" name="callback_url" id="callback_url" placeholder="https://your-server.com/webhook" />
+              <small>Receive a POST notification when conversion completes or fails</small>
+            </label>
+          </details>
+          
           <button type="submit" class="primary">Convert</button>
         </form>
 
@@ -43,6 +53,7 @@
             <span id="progress-text">Processing…</span>
           </div>
           <p id="detail" hidden><strong>Detail:</strong> <span id="detail-text"></span></p>
+          <p id="pages-info" hidden><strong>Pages:</strong> <span id="pages-text"></span></p>
           <div id="download" class="download" hidden>
             <a id="download-link" href="#" target="_blank" download>
               <span aria-hidden="true">⬇️</span>
@@ -195,30 +206,53 @@
           // Update overlay based on status
           if (payload.status === "processing") {
             progressBox.hidden = false;
-            const elapsedSeconds = pollStart
-              ? Math.floor((Date.now() - pollStart) / 1000)
-              : 0;
-            progressText.textContent = elapsedSeconds
-              ? `Processing… (${elapsedSeconds}s elapsed)`
-              : "Processing…";
+            
+            // Use real progress data from API if available
+            let progressInfo = "Processing…";
+            if (payload.progress) {
+              const pages = payload.progress.total_pages || '?';
+              const elapsed = payload.progress.elapsed_seconds 
+                ? Math.round(payload.progress.elapsed_seconds) 
+                : 0;
+              progressInfo = `Processing ${pages} pages… (${elapsed}s elapsed)`;
+              
+              // Show pages info
+              const pagesInfoBox = document.getElementById('pages-info');
+              const pagesText = document.getElementById('pages-text');
+              pagesText.textContent = `${pages} pages`;
+              pagesInfoBox.hidden = false;
+            } else {
+              const elapsedSeconds = pollStart
+                ? Math.floor((Date.now() - pollStart) / 1000)
+                : 0;
+              progressInfo = elapsedSeconds
+                ? `Processing… (${elapsedSeconds}s elapsed)`
+                : "Processing…";
+            }
+            progressText.textContent = progressInfo;
+            
+            // Calculate elapsed for stage simulation
+            const elapsedForStages = payload.progress 
+              ? Math.round(payload.progress.elapsed_seconds || 0)
+              : (pollStart ? Math.floor((Date.now() - pollStart) / 1000) : 0);
             
             // Update overlay stages
             updateStage('upload', 'complete');
             updateStage('processing', 'active');
-            updateUploadProgress(40, "Processing document...");
+            updateUploadProgress(40, progressInfo);
             
             // Simulate stages based on elapsed time
-            if (elapsedSeconds > 2) {
+            if (elapsedForStages > 2) {
               updateStage('processing', 'complete');
               updateStage('images', 'active');
               updateUploadProgress(60, "Extracting images...");
             }
-            if (elapsedSeconds > 4) {
+            if (elapsedForStages > 4) {
               updateStage('images', 'complete');
               updateStage('cloud', 'active');
               updateUploadProgress(80, "Uploading to cloud storage...");
             }
-            if (elapsedSeconds > 6) {
+            if (elapsedForStages > 6) {
               updateStage('cloud', 'complete');
               updateStage('complete', 'active');
               updateUploadProgress(90, "Generating markdown...");
